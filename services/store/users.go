@@ -82,7 +82,7 @@ func (s *Store) ListUsers(ctx context.Context) ([]model.User, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []model.User
+	out := []model.User{}
 	for rows.Next() {
 		u, err := scanUser(rows)
 		if err != nil {

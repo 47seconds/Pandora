@@ -13,6 +13,7 @@ import (
 type Config struct {
 	Addr          string
 	DBPath        string
+	StaticDir     string // dashboard build files, served at /dashboard/ ("" disables)
 	WebhookSecret string // shared secret used to verify incoming webhooks (HMAC-SHA256)
 	GitHubToken   string // token used to read PRs and post status/comments
 	JWTSecret     string // signs login tokens (min 32 chars)
@@ -33,6 +34,7 @@ func Load() (*Config, error) {
 	c := &Config{
 		Addr:          env("PANDORA_ADDR", ":8847"),
 		DBPath:        env("PANDORA_DB_PATH", "./data/pandora.db"),
+		StaticDir:     env("PANDORA_STATIC_DIR", "./static"),
 		WebhookSecret: os.Getenv("PANDORA_WEBHOOK_SECRET"),
 		GitHubToken:   os.Getenv("PANDORA_GITHUB_TOKEN"),
 		JWTSecret:     os.Getenv("PANDORA_JWT_SECRET"),

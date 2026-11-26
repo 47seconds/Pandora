@@ -16,6 +16,7 @@ Runs on the UAT server. GitHub only sends it events; all review work happens her
       service/              pipeline logic (supersede, run lifecycle)
       github/               webhook verification + GitHub REST client
       review/               AI reviewer (anthropic, mock) + verdict policy
+    static/                 dashboard (plain HTML/CSS/JS, no build); served at /dashboard/
     sources/<service>/      per-service test definitions (smoke_test, basic_test, feature_test)
                             forge, citadel, eva scaffolded; filled in the testing phase
 
@@ -45,6 +46,14 @@ on the server). The UAT URL must be reachable from GitHub's runners.
 Cost note: a GitHub-hosted runner bills at least ~1 minute per run. To make it free, run this one job on a
 self-hosted runner on the UAT box (`runs-on: self-hosted`), or use a direct repo webhook to the same endpoint
 (no workflow at all). The endpoint accepts both.
+
+## Dashboard
+Open `/dashboard/` (`/` redirects there). Log in with a Pandora account: PR list with live status
+(auto-refreshes every 15s), per-PR review history with the AI report, and a Users page for admins
+(roles, GitHub login, deactivate). It is static files in `static/` calling the API above; the page itself is
+public but all data needs the JWT. To use a real frontend later, put its build output in `static/`
+(must contain `index.html`, relative asset paths) or point `PANDORA_STATIC_DIR` elsewhere.
+Strict CSP is set (no inline scripts/styles), so a build must not rely on them.
 
 ## Database and schema
 SQLite file (`PANDORA_DB_PATH`, `/data/pandora.db` in Docker, on the `pandora_data` volume). Back it up by copying

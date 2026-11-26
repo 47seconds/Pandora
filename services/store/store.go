@@ -213,7 +213,7 @@ ORDER BY p.updated_at DESC LIMIT ?`, state, state, limit)
 		return nil, err
 	}
 	defer rows.Close()
-	var out []model.PRWithRun
+	out := []model.PRWithRun{}
 	for rows.Next() {
 		var x model.PRWithRun
 		var rid, rprid sql.NullInt64
@@ -240,7 +240,7 @@ FROM runs WHERE pr_id=? ORDER BY id DESC`, prID)
 		return nil, err
 	}
 	defer rows.Close()
-	var out []model.Run
+	out := []model.Run{}
 	for rows.Next() {
 		var r model.Run
 		if err := rows.Scan(&r.ID, &r.PRID, &r.SHA, &r.DescHash, &r.Status, &r.Verdict, &r.Report, &r.Error, &r.CreatedAt, &r.UpdatedAt); err != nil {

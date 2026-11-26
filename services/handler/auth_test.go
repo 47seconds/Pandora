@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -167,3 +169,37 @@ func TestExpiredAndForgedTokens(t *testing.T) {
 }
 
 func itoa(i int) string { b, _ := json.Marshal(i); return string(b) }
+
+func TestDashboardServed(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>pandora</html>"), 0o644)
+	base := authServer(t, &config.Config{StaticDir: dir})
+
+	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	r, err := noRedirect.Get(base + "/")
+	if err != nil || r.StatusCode != 302 || r.Header.Get("Location") != "/dashboard/" {
+		t.Fatalf("root redirect: %v %v", err, r)
+	}
+	r, err = http.Get(base + "/dashboard/")
+	if err != nil || r.StatusCode != 200 {
+		t.Fatalf("dashboard: %v %v", err, r)
+	}
+	if !strings.Contains(r.Header.Get("Content-Security-Policy"), "default-src 'self'") {
+		t.Fatal("missing CSP")
+	}
+	b, _ := io.ReadAll(r.Body)
+	if !strings.Contains(string(b), "pandora") {
+		t.Fatalf("body: %s", b)
+	}
+	// data stays protected even though the shell is public
+	if code, _ := call(t, "GET", base+"/api/v1/prs", "", nil); code != 401 {
+		t.Fatalf("api must stay protected: %d", code)
+	}
+}
+
+func TestDashboardDisabledWhenMissing(t *testing.T) {
+	base := authServer(t, &config.Config{StaticDir: filepath.Join(t.TempDir(), "nope")})
+	if r, _ := http.Get(base + "/dashboard/"); r.StatusCode != 404 {
+		t.Fatalf("want 404, got %d", r.StatusCode)
+	}
+}

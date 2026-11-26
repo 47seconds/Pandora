@@ -1,0 +1,70 @@
+:root {
+  --bg: #f6f7f9; --surface: #fff; --text: #1a1d23; --muted: #626a78; --border: #dfe3ea;
+  --accent: #3b5bdb; --accent-text: #fff;
+  --green-bg: #e3f6e8; --green: #17653a;
+  --amber-bg: #fdf1d6; --amber: #8a5a00;
+  --red-bg: #fde4e4; --red: #a12525;
+  --blue-bg: #e2ebfd; --blue: #2a4aa8;
+  --grey-bg: #eceef2; --grey: #5a6270;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14161a; --surface: #1c1f25; --text: #e8eaef; --muted: #9aa3b2; --border: #2c313a;
+    --accent: #7c9bff; --accent-text: #0c1020;
+    --green-bg: #17301f; --green: #7ddc9f;
+    --amber-bg: #3a2e12; --amber: #f0c36a;
+    --red-bg: #3b1d1d; --red: #ff9a9a;
+    --blue-bg: #1d2a4d; --blue: #9db6ff;
+    --grey-bg: #2a2e36; --grey: #a3acba;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+header { display: flex; align-items: center; gap: 20px; padding: 12px 24px; background: var(--surface); border-bottom: 1px solid var(--border); }
+header .brand { font-weight: 700; font-size: 16px; color: var(--text); }
+header nav { display: flex; gap: 14px; flex: 1; }
+header nav a.active { font-weight: 600; text-decoration: underline; }
+header .who { color: var(--muted); font-size: 13px; }
+main { max-width: 1100px; margin: 0 auto; padding: 24px; }
+h1 { font-size: 18px; margin: 0 0 16px; }
+h2 { font-size: 15px; margin: 24px 0 8px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.tile { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+.tile .n { font-size: 24px; font-weight: 700; }
+.tile .l { color: var(--muted); font-size: 12px; }
+.toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
+.toolbar .grow { flex: 1; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.pad { padding: 14px 16px; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+th { color: var(--muted); font-weight: 500; font-size: 12px; }
+tr:last-child td { border-bottom: 0; }
+tbody tr.click { cursor: pointer; }
+tbody tr.click:hover { background: var(--bg); }
+.muted { color: var(--muted); }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.badge { display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.b-green { background: var(--green-bg); color: var(--green); }
+.b-amber { background: var(--amber-bg); color: var(--amber); }
+.b-red { background: var(--red-bg); color: var(--red); }
+.b-blue { background: var(--blue-bg); color: var(--blue); }
+.b-grey { background: var(--grey-bg); color: var(--grey); }
+button, select, input { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; }
+button { cursor: pointer; }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+button:disabled, select:disabled { opacity: .5; cursor: not-allowed; }
+.login { max-width: 360px; margin: 10vh auto; }
+.login form { display: flex; flex-direction: column; gap: 10px; }
+.login label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+.error { color: var(--red); min-height: 1.2em; font-size: 13px; }
+.run { padding: 14px 16px; border-bottom: 1px solid var(--border); }
+.run:last-child { border-bottom: 0; }
+.run.old { opacity: .7; }
+.run .head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+.run ul { margin: 4px 0 0; padding-left: 18px; }
+.empty { padding: 28px; text-align: center; color: var(--muted); }
+.back { display: inline-block; margin-bottom: 12px; }
+@media (max-width: 700px) { main { padding: 14px; } th:nth-child(n+5), td:nth-child(n+5) { display: none; } }

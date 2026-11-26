@@ -16,6 +16,8 @@ WORKDIR /app
 COPY --from=builder /app/pandora .
 # sources/ holds per-service test definitions used by later phases
 COPY --from=builder /app/sources ./sources
+# dashboard build files, served at /dashboard/ (PANDORA_STATIC_DIR)
+COPY --from=builder /app/static ./static
 ENV PANDORA_ADDR=:8847 PANDORA_DB_PATH=/data/pandora.db
 VOLUME /data
 EXPOSE 8847

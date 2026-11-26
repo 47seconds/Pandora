@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -35,6 +36,8 @@ func New(cfg *config.Config, st *store.Store, o *service.Service, am *auth.Manag
 
 	r.GET("/healthz", func(c *gin.Context) { c.JSON(200, gin.H{"ok": true}) })
 	r.POST("/webhook/github", s.webhook)
+
+	s.mountDashboard(r)
 
 	r.POST("/auth/signup", s.signup)
 	r.POST("/auth/login", s.login)
@@ -111,4 +114,24 @@ func (s *Server) listRuns(c *gin.Context) {
 		return
 	}
 	c.JSON(200, runs)
+}
+
+// mountDashboard serves the static dashboard build at /dashboard/. Drop any built
+// frontend into the static dir (it needs an index.html); no Go changes required.
+func (s *Server) mountDashboard(r *gin.Engine) {
+	dir := s.cfg.StaticDir
+	if dir == "" {
+		return
+	}
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		s.log.Warn("dashboard disabled: static dir not found", "dir", dir)
+		return
+	}
+	r.GET("/", func(c *gin.Context) { c.Redirect(http.StatusFound, "/dashboard/") })
+	dash := r.Group("/dashboard", func(c *gin.Context) {
+		c.Header("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("Referrer-Policy", "no-referrer")
+	})
+	dash.StaticFS("/", gin.Dir(dir, false)) // false: no directory listings
 }
