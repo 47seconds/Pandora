@@ -1,0 +1,686 @@
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name campaign-dev.vocallabs.ai campaign.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+    client_max_body_size 100M;
+
+    location / {
+        proxy_pass http://127.0.0.1:3030;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name test-api.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+    client_max_body_size 100M;
+
+    location / {
+        proxy_pass http://127.0.0.1:3040;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name client-functions-dev.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+    client_max_body_size 100M;
+
+    location / {
+        proxy_pass http://127.0.0.1:9898;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name qdrant-dev.vocallabs.ai qdrant.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:6333;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name queue-monitor-dev.vocallabs.ai queue-monitor.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:9080;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name cache-dev.vocallabs.ai cache.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:8084;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name queue-dev.vocallabs.ai queue.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name webhook-uat.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:3010;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name dozzle.vocallabs.ai dozzle-dev.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    location / {
+        # Basic authentication
+        auth_basic "Dozzle Login";
+        auth_basic_user_file /etc/nginx/.htpasswd;
+        
+        proxy_pass http://127.0.0.1:9999;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+        
+        # Pass auth headers to Dozzle
+        proxy_set_header Remote-User $remote_user;
+        proxy_set_header Remote-Email "$remote_user@subspace.money";
+        proxy_set_header Remote-Name $remote_user;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name prodlogger.vocallabs.ai prodlogger-dev.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    location / {
+        add_header X-Debug-Upstream $upstream_addr always;
+        proxy_pass http://127.0.0.1:9000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    server_name  plivo-dev.vocallabs.ai api-dev.vocallabs.ai api-uat.vocallabs.ai  plivo.grow90.org plivo.vocallabs.ai api.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+
+    # listen [::]:443 ssl ipv6only=on; # managed by Certbot
+    # listen 443 ssl; # managed by Certbot
+    # ssl_certificate /etc/letsencrypt/live/app.brandsparkx.com/fullchain.pem; # managed by Certbot
+    # ssl_certificate_key /etc/letsencrypt/live/app.brandsparkx.com/privkey.pem; # managed by Certbot
+    include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name demo.travelr.club;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name call-web.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:5500;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name control.vocallabs.ai control-uat.vocallabs.ai control-dev.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:3002;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name db.vocallabs.ai db-dev.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:8090;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name hasura-dev.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    # Route sync-related requests to the Sync Service
+    location ~ ^/(sync|sync-hasura|sync-metadata|capture-changes|sync-client-data) {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+    # Route everything else to Hasura
+    location / {
+        proxy_pass http://127.0.0.1:8055;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name arc.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:8083;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name ioapi.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name call-dev.vocallabs.ai call-uat.vocallabs.ai call.vocallabs.ai call-in.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name call-debug-uat.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:6060;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name pyhelper.vocallabs.ai pyhelper-dev.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+    client_max_body_size 100M;
+
+    location / {
+        proxy_pass http://127.0.0.1:8085;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name twillioapi-dev.vocallabs.ai vocalapi-dev.travelr.club;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:6000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name sip-dev.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:8086;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name util.travelr.club;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:4500;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name queue-uat.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name app.vocallabs.ai app-dev.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:3004;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name allah.vocallabs.ai allah-dev.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:8123;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name firecrawl.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:3002;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name rupture-dev.vocallabs.ai rupture2.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:8047;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name wc.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:3003;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name goapi-dev.vocallabs.ai goapi.vocallabs.ai goapi-uat.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:3050;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name forge-dev.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+    client_max_body_size 5M;
+
+    location / {
+        proxy_pass http://127.0.0.1:8087;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name eva-dev.vocallabs.ai eva.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+    client_max_body_size 5M;
+
+    location / {
+        proxy_pass http://127.0.0.1:8747;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name pandora-dev.vocallabs.ai pandora.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+    client_max_body_size 5M;
+
+    location / {
+        proxy_pass http://127.0.0.1:8847;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+}
+
+server {
+    listen 80 ;
+    listen [::]:80 ;
+    server_name graze-dev.vocallabs.ai;
+    error_log  /var/log/nginx/error.log;
+    access_log /var/log/nginx/access.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:8081;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+
+        # Calls outlive nginx's 60s default. graze pings both legs every 20s,
+        # but a silent stretch must not be able to drop a live call.
+        proxy_read_timeout  3600s;
+        proxy_send_timeout  3600s;
+    }
+
+}
+
+server {
+    if ($host = app.brandsparkx.com) {
+        return 301 https://$host$request_uri;
+    } # managed by Certbot
+
+
+    listen 80 ;
+    listen [::]:80 ;
+    server_name app.brandsparkx.com plivo-dev.vocallabs.ai api-dev.vocallabs.ai api-uat.vocallabs.ai  plivo.grow90.org plivo.vocallabs.ai api.vocallabs.ai;
+    return 404; # managed by Certbot
+
+
+}

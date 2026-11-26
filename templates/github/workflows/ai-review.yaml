@@ -1,0 +1,36 @@
+# Copy to <service-repo>/.github/workflows/ai-review.yaml
+#
+# Thin trigger only: no checkout, no build, no AI here. It forwards the PR event to
+# Pandora (UAT), which does the review and reports back via a PR comment and the
+# `pandora/ai-review` commit status.
+#
+# Repo config required:
+#   vars.PANDORA_URL                  e.g. https://pandora.example.com   (no trailing slash)
+#   secrets.PANDORA_WEBHOOK_SECRET    same value as PANDORA_WEBHOOK_SECRET on the Pandora server
+name: ai-review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, ready_for_review, closed]
+
+permissions: {}
+
+jobs:
+  notify-pandora:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Send PR event to Pandora
+        env:
+          PANDORA_URL: ${{ vars.PANDORA_URL }}
+          PANDORA_WEBHOOK_SECRET: ${{ secrets.PANDORA_WEBHOOK_SECRET }}
+        run: |
+          set -euo pipefail
+          # Sign the exact event file GitHub wrote, and send those same bytes.
+          SIG=$(openssl dgst -sha256 -hmac "$PANDORA_WEBHOOK_SECRET" "$GITHUB_EVENT_PATH" | sed 's/^.* //')
+          curl -fsS --retry 3 --retry-delay 2 --max-time 20 \
+            -X POST "$PANDORA_URL/webhook/github" \
+            -H "Content-Type: application/json" \
+            -H "X-GitHub-Event: pull_request" \
+            -H "X-Hub-Signature-256: sha256=$SIG" \
+            --data-binary "@$GITHUB_EVENT_PATH"

@@ -34,17 +34,17 @@ Closing a PR supersedes all its runs. Runs interrupted by a restart are resumed 
     cp .env.example .env   # fill in, then export the vars
     go run .
 
-## Hooking up GitHub (zero Actions minutes)
-Preferred: repo Settings -> Webhooks -> payload URL `https://<uat-host>/webhook/github`, content type
-`application/json`, secret = `PANDORA_WEBHOOK_SECRET`, event "Pull requests".
+## Hooking up GitHub (workflow)
+Each service repo gets `.github/workflows/ai-review.yaml`; copy it from
+`templates/github/workflows/ai-review.yaml`. It does no work itself: it signs the PR event and POSTs it to
+`/webhook/github`. Pandora does the review and reports back with a PR comment and the `pandora/ai-review` status.
 
-If UAT must be called from a workflow instead:
+Per repo set `vars.PANDORA_URL` and `secrets.PANDORA_WEBHOOK_SECRET` (same value as `PANDORA_WEBHOOK_SECRET`
+on the server). The UAT URL must be reachable from GitHub's runners.
 
-    - run: |
-        SIG=$(printf '%s' "$PAYLOAD" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')
-        curl -fsS -X POST "$PANDORA_URL/webhook/github" -H "X-GitHub-Event: pull_request" \
-          -H "X-Hub-Signature-256: sha256=$SIG" -H "Content-Type: application/json" --data-binary "$PAYLOAD"
-      env: { PAYLOAD: "${{ toJSON(github.event) }}", SECRET: "${{ secrets.PANDORA_SECRET }}", PANDORA_URL: "${{ vars.PANDORA_URL }}" }
+Cost note: a GitHub-hosted runner bills at least ~1 minute per run. To make it free, run this one job on a
+self-hosted runner on the UAT box (`runs-on: self-hosted`), or use a direct repo webhook to the same endpoint
+(no workflow at all). The endpoint accepts both.
 
 ## Database and schema
 SQLite file (`PANDORA_DB_PATH`, `/data/pandora.db` in Docker, on the `pandora_data` volume). Back it up by copying
