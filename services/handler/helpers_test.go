@@ -36,11 +36,14 @@ const (
 
 // fakeGH plays both api.github.com and github.com (OAuth) for the tests.
 type fakeGH struct {
-	mu       sync.Mutex
-	head     string
-	body     string
-	statuses []string
-	comments int
+	mu        sync.Mutex
+	head      string
+	body      string
+	statuses  []string
+	comments  int
+	bodies    []string // PR comment bodies posted
+	closed    []string // PRs closed through the API
+	failClose bool
 }
 
 var ghUsers = map[string]map[string]any{
@@ -88,7 +91,19 @@ func (f *fakeGH) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "[]")
 	case strings.HasSuffix(r.URL.Path, "/comments") && r.Method == "POST":
 		f.comments++
+		b, _ := io.ReadAll(r.Body)
+		var m map[string]string
+		json.Unmarshal(b, &m)
+		f.bodies = append(f.bodies, m["body"])
 		w.WriteHeader(201)
+		io.WriteString(w, "{}")
+	case r.Method == "PATCH" && strings.Contains(r.URL.Path, "/pulls/"):
+		if f.failClose {
+			w.WriteHeader(403)
+			io.WriteString(w, `{"message":"Resource not accessible by integration"}`)
+			return
+		}
+		f.closed = append(f.closed, r.URL.Path)
 		io.WriteString(w, "{}")
 	default:
 		w.WriteHeader(404)

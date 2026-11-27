@@ -22,14 +22,15 @@ func open(t *testing.T) *Store {
 
 func TestMigrateIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "m.db")
+	files, _ := migrationsFS.ReadDir("migrations")
 	for i := 0; i < 2; i++ { // reopening must not re-apply or fail
 		st, err := Open(path)
 		if err != nil {
 			t.Fatal(err)
 		}
 		var n int
-		if err := st.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil || n != 4 {
-			t.Fatalf("run %d: migrations=%d err=%v", i, n, err)
+		if err := st.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil || n != len(files) {
+			t.Fatalf("run %d: applied %d of %d migrations, err=%v", i, n, len(files), err)
 		}
 		st.Close()
 	}
@@ -111,6 +112,45 @@ func TestUpsertGitHubUser(t *testing.T) {
 	owner, _, _ := st.UpsertGitHubUser(ctx, model.GitHubProfile{ID: 3, Login: "Boss"}, boss)
 	if owner.Role != "superadmin" {
 		t.Fatalf("bootstrap: %+v", owner)
+	}
+	if n, _ := st.CountSuperAdmins(ctx); n != 1 {
+		t.Fatalf("superadmins: %d", n)
+	}
+}
+
+func TestEnsureSuperAdminAtStartup(t *testing.T) {
+	st := open(t)
+	ctx := context.Background()
+	// the owner already exists as a plain admin (signed in before the super-admin release)
+	owner, _, _ := st.UpsertGitHubUser(ctx, model.GitHubProfile{ID: 1, Login: "47seconds"}, "someone-else")
+	other, _, _ := st.UpsertGitHubUser(ctx, model.GitHubProfile{ID: 2, Login: "other"}, "someone-else")
+	st.db.Exec(`UPDATE users SET role='admin' WHERE id IN (?, ?)`, owner.ID, other.ID)
+
+	if changed, _ := st.EnsureSuperAdmin(ctx, ""); changed {
+		t.Fatal("empty login must do nothing")
+	}
+	if changed, _ := st.EnsureSuperAdmin(ctx, "not-signed-in-yet"); changed {
+		t.Fatal("unknown login must do nothing (promotion happens at their first sign-in)")
+	}
+	changed, err := st.EnsureSuperAdmin(ctx, "47SECONDS") // case-insensitive
+	if err != nil || !changed {
+		t.Fatalf("changed=%v err=%v", changed, err)
+	}
+	if u, _ := st.GetUser(ctx, owner.ID); u.Role != "superadmin" {
+		t.Fatalf("owner role: %s", u.Role)
+	}
+	if u, _ := st.GetUser(ctx, other.ID); u.Role != "admin" {
+		t.Fatalf("others untouched: %s", u.Role)
+	}
+	if changed, _ := st.EnsureSuperAdmin(ctx, "47seconds"); changed {
+		t.Fatal("second run must be a no-op")
+	}
+	// ownership moves when the configured login changes; still exactly one superadmin
+	if changed, _ := st.EnsureSuperAdmin(ctx, "other"); !changed {
+		t.Fatal("ownership should move")
+	}
+	if u, _ := st.GetUser(ctx, owner.ID); u.Role != "admin" {
+		t.Fatalf("previous owner: %s", u.Role)
 	}
 	if n, _ := st.CountSuperAdmins(ctx); n != 1 {
 		t.Fatalf("superadmins: %d", n)

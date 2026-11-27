@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"vocallabs.com/pandora/services/model"
+	"vocallabs.com/pandora/services/service"
 	"vocallabs.com/pandora/services/store"
 )
 
@@ -44,6 +45,15 @@ func (s *Server) myReviews(c *gin.Context) {
 	c.JSON(200, prs)
 }
 
+func isReviewer(p *model.PRWithRun, login string) bool {
+	for _, r := range p.Reviewers {
+		if strings.EqualFold(r, login) {
+			return true
+		}
+	}
+	return false
+}
+
 func canView(u *model.User, p *model.PRWithRun) bool {
 	if model.IsAdmin(u.Role) {
 		return true
@@ -51,19 +61,25 @@ func canView(u *model.User, p *model.PRWithRun) bool {
 	if u.GitHubLogin == "" {
 		return false
 	}
-	if strings.EqualFold(p.Author, u.GitHubLogin) {
-		return true
-	}
-	for _, r := range p.Reviewers {
-		if strings.EqualFold(r, u.GitHubLogin) {
-			return true
-		}
-	}
-	return false
+	return strings.EqualFold(p.Author, u.GitHubLogin) || isReviewer(p, u.GitHubLogin)
 }
 
-// getPR returns a PR with its run history. Non-admins can only open PRs they authored
-// or were asked to review; anything else is reported as not found.
+// mayReview: admins and the PR's requested reviewers can decide, but nobody (admins included)
+// decides on their own pull request.
+func mayReview(u *model.User, p *model.PRWithRun) bool {
+	if u.GitHubLogin == "" || strings.EqualFold(p.Author, u.GitHubLogin) {
+		return false
+	}
+	return model.IsAdmin(u.Role) || isReviewer(p, u.GitHubLogin)
+}
+
+// canDecide is true while the PR is open and its latest run is waiting for a human.
+func canDecide(u *model.User, p *model.PRWithRun) bool {
+	return p.State == "open" && p.LatestRun != nil && p.LatestRun.Status == model.StatusNeedsHuman && mayReview(u, p)
+}
+
+// getPR returns a PR with its run history and human decisions. Non-admins can only open PRs
+// they authored or were asked to review; anything else is reported as not found.
 func (s *Server) getPR(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
@@ -84,7 +100,77 @@ func (s *Server) getPR(c *gin.Context) {
 		serverError(c)
 		return
 	}
-	c.JSON(200, gin.H{"pr": p, "runs": runs})
+	decisions, err := s.store.ListDecisions(c.Request.Context(), id)
+	if err != nil {
+		serverError(c)
+		return
+	}
+	c.JSON(200, gin.H{"pr": p, "runs": runs, "decisions": decisions, "can_decide": canDecide(current(c), p)})
+}
+
+const maxReasonLen = 2000
+
+// decide records a reviewer's verdict on a PR the AI flagged as needing human review.
+// The request names the run the reviewer was looking at, so a click on a stale page is refused.
+func (s *Server) decide(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "bad id"})
+		return
+	}
+	var in struct {
+		RunID    int64  `json:"run_id"`
+		Decision string `json:"decision"`
+		Reason   string `json:"reason"`
+	}
+	if err := c.ShouldBindJSON(&in); err != nil || (in.Decision != "approve" && in.Decision != "reject") || in.RunID == 0 {
+		c.JSON(400, gin.H{"error": "send run_id and decision (approve or reject)"})
+		return
+	}
+	in.Reason = strings.TrimSpace(in.Reason)
+	if in.Decision == "reject" && in.Reason == "" {
+		c.JSON(400, gin.H{"error": "a reason is required to reject"})
+		return
+	}
+	if len(in.Reason) > maxReasonLen {
+		c.JSON(400, gin.H{"error": "reason is too long"})
+		return
+	}
+	p, err := s.store.GetPR(c.Request.Context(), id)
+	actor := current(c)
+	if errors.Is(err, store.ErrNotFound) || (err == nil && !canView(actor, p)) {
+		c.JSON(404, gin.H{"error": "pull request not found"})
+		return
+	}
+	if err != nil {
+		serverError(c)
+		return
+	}
+	if !mayReview(actor, p) {
+		msg := "only an admin or a requested reviewer can review this pull request"
+		if strings.EqualFold(p.Author, actor.GitHubLogin) {
+			msg = "you cannot review your own pull request"
+		}
+		c.JSON(403, gin.H{"error": msg})
+		return
+	}
+	if p.LatestRun == nil || p.LatestRun.ID != in.RunID || p.LatestRun.Status != model.StatusNeedsHuman || p.State != "open" {
+		c.JSON(409, gin.H{"error": "this pull request changed or was already decided; refresh the page"})
+		return
+	}
+	err = s.svc.Decide(c.Request.Context(), actor, p, in.RunID, in.Decision == "approve", in.Reason)
+	switch {
+	case errors.Is(err, store.ErrStale):
+		c.JSON(409, gin.H{"error": "this pull request changed or was already decided; refresh the page"})
+	case errors.Is(err, service.ErrGitHub):
+		s.log.Error("decision: github", "err", err)
+		c.JSON(502, gin.H{"error": err.Error()})
+	case err != nil:
+		s.log.Error("decision", "err", err)
+		serverError(c)
+	default:
+		c.JSON(200, gin.H{"ok": true})
+	}
 }
 
 func (s *Server) adminPRs(c *gin.Context) {

@@ -11,6 +11,25 @@ const (
 	StatusBlocked    = "blocked"     // critical issues found
 	StatusError      = "error"       // review itself failed
 	StatusSuperseded = "superseded"  // newer commit/edit replaced this run
+	StatusRejected   = "rejected"    // a human rejected it (the PR is closed); never superseded
+)
+
+// Decision is one human verdict on a run that needed review.
+type Decision struct {
+	ID         int64  `json:"id"`
+	RunID      int64  `json:"run_id"`
+	PRID       int64  `json:"pr_id"`
+	SHA        string `json:"sha"`
+	Decision   string `json:"decision"` // approved | rejected
+	Reason     string `json:"reason"`
+	ActorID    int64  `json:"actor_id"`
+	ActorLogin string `json:"actor_login"`
+	CreatedAt  string `json:"created_at"`
+}
+
+const (
+	DecisionApproved = "approved"
+	DecisionRejected = "rejected"
 )
 
 type PR struct {

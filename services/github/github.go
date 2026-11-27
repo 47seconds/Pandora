@@ -178,6 +178,16 @@ func (c *Client) GetDiff(ctx context.Context, repo string, n, maxBytes int) (dif
 	return string(b), false, nil
 }
 
+// ClosePR closes a pull request without merging it.
+func (c *Client) ClosePR(ctx context.Context, repo string, n int) error {
+	resp, err := c.do(ctx, repo, "PATCH", fmt.Sprintf("/repos/%s/pulls/%d", repo, n), jsonAccept, map[string]string{"state": "closed"})
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
 // SetStatus sets a commit status (state: pending|success|failure|error).
 func (c *Client) SetStatus(ctx context.Context, repo, sha, state, contextName, desc string) error {
 	if len(desc) > 140 {

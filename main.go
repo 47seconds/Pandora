@@ -68,6 +68,11 @@ func main() {
 	if prSource != nil {
 		svc.StartSync() // backfill recent PRs in the background (BackfillDays)
 	}
+	if changed, err := st.EnsureSuperAdmin(ctx, cfg.BootstrapAdmin); err != nil {
+		log.Error("ensure super-admin", "err", err)
+	} else if changed {
+		log.Info("super-admin set from PANDORA_BOOTSTRAP_ADMIN_GITHUB", "login", cfg.BootstrapAdmin)
+	}
 	if n, err := st.CountSuperAdmins(ctx); err == nil && n == 0 {
 		if cfg.BootstrapAdmin == "" {
 			log.Warn("no super-admin yet: the FIRST person to sign in will become super-admin; set PANDORA_BOOTSTRAP_ADMIN_GITHUB to choose who")

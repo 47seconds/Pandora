@@ -74,7 +74,7 @@ func (s *Store) SupersedeOthers(ctx context.Context, prID, keepID int64) ([]int6
 	}
 	defer tx.Rollback()
 	rows, err := tx.QueryContext(ctx,
-		`SELECT id FROM runs WHERE pr_id=? AND id<>? AND status<>?`, prID, keepID, model.StatusSuperseded)
+		`SELECT id FROM runs WHERE pr_id=? AND id<>? AND status NOT IN (?, ?)`, prID, keepID, model.StatusSuperseded, model.StatusRejected)
 	if err != nil {
 		return nil, err
 	}
@@ -89,8 +89,8 @@ func (s *Store) SupersedeOthers(ctx context.Context, prID, keepID int64) ([]int6
 	}
 	rows.Close()
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE runs SET status=?, updated_at=? WHERE pr_id=? AND id<>? AND status<>?`,
-		model.StatusSuperseded, now(), prID, keepID, model.StatusSuperseded); err != nil {
+		`UPDATE runs SET status=?, updated_at=? WHERE pr_id=? AND id<>? AND status NOT IN (?, ?)`,
+		model.StatusSuperseded, now(), prID, keepID, model.StatusSuperseded, model.StatusRejected); err != nil {
 		return nil, err
 	}
 	return ids, tx.Commit()

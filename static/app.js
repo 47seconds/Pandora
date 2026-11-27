@@ -14,11 +14,11 @@
   const STATUS = {
     queued: ['Queued', 'blue'], ai_review: ['Reviewing', 'blue'], ai_passed: ['AI passed', 'green'],
     needs_human: ['Needs human', 'amber'], blocked: ['Blocked', 'red'], error: ['Error', 'red'],
-    superseded: ['Superseded', 'grey'], merged: ['Merged', 'purple'], closed: ['Closed', 'grey'],
+    superseded: ['Superseded', 'grey'], rejected: ['Rejected', 'red'], merged: ['Merged', 'purple'], closed: ['Closed', 'grey'],
     draft: ['Draft', 'grey'], none: ['Not reviewed', 'grey'],
   };
   const badge = (k) => { const [l, c] = STATUS[k] || [k, 'grey']; return `<span class="badge b-${c}">${esc(l)}</span>`; };
-  const prStatus = (p) => p.state === 'closed' ? badge(p.merged ? 'merged' : 'closed') : p.draft ? badge('draft') : badge(p.latest_run ? p.latest_run.status : 'none');
+  const prStatus = (p) => p.latest_run && p.latest_run.status === 'rejected' ? badge('rejected') : p.state === 'closed' ? badge(p.merged ? 'merged' : 'closed') : p.draft ? badge('draft') : badge(p.latest_run ? p.latest_run.status : 'none');
 
   const short = (sha) => esc((sha || '').slice(0, 7));
   const when = (iso) => iso ? new Date(iso).toLocaleString() : '';
@@ -155,7 +155,8 @@
       return;
     }
     if (rid !== state.rid) return;
-    const { pr, runs } = data;
+    const { pr, runs, decisions = [], can_decide: canDecide = false } = data;
+    const latest = runs[0];
     const gh = 'https://github.com/' + pr.repo + '/pull/' + pr.number;
     $('main').innerHTML = `
       <a class="back" id="back" href="#/my">← Back</a>
@@ -163,12 +164,59 @@
       <p class="muted"><span class="mono">${esc(pr.repo)}#${pr.number}</span> · by ${esc(pr.author)} · into ${esc(pr.base_ref || 'main')} ·
         <a href="${esc(gh)}" target="_blank" rel="noopener noreferrer">View on GitHub</a></p>
       ${pr.reviewers.length ? `<p>Requested reviewers: <span class="chips">${pr.reviewers.map((r) => `<span class="chip">${esc(r)}</span>`).join('')}</span></p>` : ''}
+      ${decideCard(pr, latest, canDecide)}
       <h2>AI review history</h2>
-      <div class="card">${runs.length ? runs.map((r, i) => runHTML(r, i === 0)).join('') : '<div class="empty">No AI review has run for this PR.</div>'}</div>`;
+      <div class="card">${runs.length ? runs.map((r, i) => runHTML(r, i === 0, decisions.filter((d) => d.run_id === r.id))).join('') : '<div class="empty">No AI review has run for this PR.</div>'}</div>`;
     $('back').onclick = (e) => { if (history.length > 1) { e.preventDefault(); history.back(); } };
+    if (canDecide) wireDecision(rid, pr, latest);
   }
 
-  function runHTML(r, latest) {
+  const DEFAULT_REJECT_REASON = 'PR description and code changes do not match.';
+
+  // The AI could not confirm the PR matches its description: a human decides.
+  function decideCard(pr, latest, canDecide) {
+    if (!latest || latest.status !== 'needs_human' || pr.state !== 'open') return '';
+    if (!canDecide) {
+      return '<div class="banner"><strong>Waiting for human review.</strong> A requested reviewer or an admin needs to approve or reject this pull request.</div>';
+    }
+    return `<div class="card pad decide">
+      <h2>Human review needed</h2>
+      <p class="muted">The AI could not confirm this pull request matches its description. Approve to let it continue, or reject to close it and tell the author why.</p>
+      <div class="toolbar"><button class="primary" id="approve">Approve</button><button id="reject">Reject…</button></div>
+      <div id="rejectbox" hidden>
+        <label for="reason">Reason (posted to the pull request)</label>
+        <textarea id="reason" rows="3" maxlength="2000">${esc(DEFAULT_REJECT_REASON)}</textarea>
+        <div class="toolbar"><button class="danger" id="confirmreject">Reject and close PR</button><button id="cancelreject">Cancel</button></div>
+      </div>
+      <div class="error" id="decerr"></div>
+    </div>`;
+  }
+
+  function wireDecision(rid, pr, latest) {
+    const send = async (decision, reason) => {
+      $('decerr').textContent = '';
+      document.querySelectorAll('.decide button').forEach((b) => (b.disabled = true));
+      try {
+        // run_id pins the decision to the exact run on screen: if the PR changed meanwhile, the server refuses.
+        await api('/api/v1/prs/' + pr.id + '/decision', { method: 'POST', body: JSON.stringify({ run_id: latest.id, decision, reason }) });
+        if (rid === state.rid) renderPR(rid, pr.id);
+      } catch (e) {
+        if (e.message === 'signed out') return;
+        $('decerr').textContent = e.message;
+        document.querySelectorAll('.decide button').forEach((b) => (b.disabled = false));
+      }
+    };
+    $('approve').onclick = () => send('approve', '');
+    $('reject').onclick = () => { $('rejectbox').hidden = false; $('reject').hidden = true; $('reason').focus(); $('reason').select(); };
+    $('cancelreject').onclick = () => { $('rejectbox').hidden = true; $('reject').hidden = false; $('decerr').textContent = ''; };
+    $('confirmreject').onclick = () => {
+      const reason = $('reason').value.trim();
+      if (!reason) { $('decerr').textContent = 'A reason is required to reject.'; return; }
+      send('reject', reason);
+    };
+  }
+
+  function runHTML(r, latest, decisions = []) {
     let rep = null;
     try { rep = r.report ? JSON.parse(r.report) : null; } catch {}
     const list = (arr) => arr && arr.length ? '<ul>' + arr.map((x) => `<li>${x}</li>`).join('') + '</ul>' : '';
@@ -181,6 +229,10 @@
       if (rep.env_var_changes && rep.env_var_changes.length) body += '<h3>Env var changes</h3>' + list(rep.env_var_changes.map((v) => `<span class="mono">${esc(v)}</span>`));
       if (rep.has_migrations) body += '<p><span class="badge b-amber">Database migrations detected</span></p>';
       if (rep.missing_tests) body += '<p class="muted">No tests accompany these changes.</p>';
+    }
+    for (const d of decisions) {
+      body += `<div class="decision ${d.decision}"><strong>${d.decision === 'approved' ? 'Approved' : 'Rejected'} by @${esc(d.actor_login)}</strong>
+        <span class="muted">${esc(when(d.created_at))}</span>${d.reason ? `<div>${esc(d.reason)}</div>` : ''}</div>`;
     }
     return `<div class="run ${latest ? '' : 'old'}"><div class="head">${badge(r.status)}<span class="mono">${short(r.sha)}</span>
       <span class="muted">${esc(when(r.created_at))}</span>${latest ? '<span class="badge b-blue">Latest</span>' : ''}</div>${body}</div>`;

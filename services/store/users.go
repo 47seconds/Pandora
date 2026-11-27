@@ -97,6 +97,37 @@ WHERE id=? RETURNING `+userCols, g.ID, g.Login, g.Name, g.AvatarURL, g.Email, g.
 	return u, created, tx.Commit()
 }
 
+// EnsureSuperAdmin makes the account with this GitHub login the superadmin right now, if it
+// already exists. Run at startup so that configuring (or changing) the owner takes effect
+// without waiting for them to sign in again. Any previous superadmin becomes a plain admin.
+// It returns false when nothing changed (no such account yet, or already the owner).
+func (s *Store) EnsureSuperAdmin(ctx context.Context, login string) (bool, error) {
+	if login == "" {
+		return false, nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	var id int64
+	var role string
+	err = tx.QueryRowContext(ctx, `SELECT id, role FROM users WHERE github_login=? COLLATE NOCASE`, login).Scan(&id, &role)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && role == model.RoleSuperAdmin) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET role=? WHERE role=? AND id<>?`, model.RoleAdmin, model.RoleSuperAdmin, id); err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET role=?, active=1, updated_at=? WHERE id=?`, model.RoleSuperAdmin, now(), id); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
+}
+
 func (s *Store) GetUser(ctx context.Context, id int64) (*model.User, error) {
 	return scanUser(s.db.QueryRowContext(ctx, `SELECT `+userCols+` FROM users WHERE id=?`, id))
 }

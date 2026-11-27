@@ -65,6 +65,7 @@ func New(d Deps) *gin.Engine {
 	member.GET("/me/prs", s.myPRs)
 	member.GET("/me/reviews", s.myReviews)
 	member.GET("/prs/:id", s.getPR)
+	member.POST("/prs/:id/decision", s.decide)
 
 	admin := authed.Group("/api/v1/admin", s.requireRole(model.RoleAdmin, model.RoleSuperAdmin))
 	admin.GET("/prs", s.adminPRs)

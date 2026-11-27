@@ -127,6 +127,21 @@ signs a session JWT into an **HttpOnly, SameSite=Lax, Secure** cookie (`PANDORA_
 - Writes need the `X-Pandora-CSRF: 1` header (the dashboard sends it) on top of SameSite cookies.
 - Admins cannot change their own role/active state (no lock-out).
 
+## Human review (when the AI says "needs human")
+A run lands in `needs_human` when the AI sees a mismatch, unrelated changes, a truncated diff, or the PR has no
+description. The PR page then shows a **Human review needed** card to whoever may decide:
+- **Who:** admins, or a user who is a *requested reviewer* on that PR. **Nobody reviews their own PR**, admins included.
+  Everyone else with access sees "waiting for human review".
+- **Approve:** the run becomes `ai_passed` (it continues to the next stage once that exists). An optional note is kept.
+- **Reject:** needs a reason (the box is pre-filled with "PR description and code changes do not match."). The run
+  becomes `rejected`, Pandora **closes the PR on GitHub** and posts the reason as a PR comment. A later "closed"
+  webhook does not overwrite the rejection. If GitHub refuses the close (permissions, outage) the rejection is rolled
+  back and the reviewer can retry.
+- **Stale protection:** the request names the run the reviewer was looking at, and the database only accepts it if that
+  run is still the PR's latest, was made for the PR's current head commit, and the PR is open. A push or description edit
+  in the meantime gives the reviewer a "changed, refresh" message instead of approving code they never saw.
+- Every decision is stored (who, when, which commit, reason) and shown in the PR's review history.
+
 ## PR data and sync
 Every `pull_request` webhook refreshes the stored PR (author, state, draft, merged, requested reviewers),
 including drafts and closed PRs; only open, non-draft PRs start an AI review.
@@ -137,7 +152,8 @@ Team review requests are not tracked yet (individual reviewers only).
 
 ## API (session cookie required)
 - `GET /auth/me`, `POST /auth/logout`: any signed-in account
-- `GET /api/v1/me/prs?state=`, `GET /api/v1/me/reviews`, `GET /api/v1/prs/:id`: `user`, `admin`
+- `GET /api/v1/me/prs?state=`, `GET /api/v1/me/reviews`, `GET /api/v1/prs/:id` (includes `decisions` and `can_decide`),
+  `POST /api/v1/prs/:id/decision` `{run_id, decision: approve|reject, reason}` (reviewers/admins, see above): `user`, `admin`
 - `GET /api/v1/admin/prs?state=&repo=&author=&reviewer=&limit=&offset=`, `GET /api/v1/admin/stats`,
   `GET /api/v1/admin/users`, `PATCH /api/v1/admin/users/:id` `{role, active}` (admin: approve/promote only),
   `DELETE /api/v1/admin/users/:id` (super-admin only),
