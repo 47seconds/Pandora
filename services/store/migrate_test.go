@@ -222,7 +222,7 @@ func TestPRFiltersAndStats(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		st.SetReviewers(ctx, id, reviewers)
+		st.AddGitHubReviewers(ctx, id, reviewers)
 	}
 	add("o/a", 1, "alice", "open", false, "2026-11-20T00:00:00Z", "", "bob")
 	add("o/a", 2, "alice", "closed", true, "2026-11-10T00:00:00Z", "2026-11-11T00:00:00Z")
@@ -268,5 +268,57 @@ func TestMigrationFilesAreOrdered(t *testing.T) {
 			t.Fatalf("bad migration order/name: %s after %s", e.Name(), prev)
 		}
 		prev = e.Name()
+	}
+}
+
+func TestReviewerSemantics(t *testing.T) {
+	st := open(t)
+	ctx := context.Background()
+	id, _ := st.UpsertPR(ctx, model.PR{Repo: "o/a", Number: 1, Author: "alice", State: "open"})
+	reviewers := func() string {
+		l, _ := st.ListPRs(ctx, PRFilter{})
+		return strings.Join(l[0].Reviewers, ",")
+	}
+
+	st.AddGitHubReviewers(ctx, id, []string{"Bob", "carol"})
+	if reviewers() != "Bob,carol" {
+		t.Fatalf("add: %s", reviewers())
+	}
+	// GitHub drops a reviewer from its list once they review there: that must NOT remove them here
+	st.AddGitHubReviewers(ctx, id, []string{"carol"})
+	if reviewers() != "Bob,carol" {
+		t.Fatalf("a webhook that lacks bob must not remove him: %s", reviewers())
+	}
+	// an explicit removal on GitHub does, and it sticks even if a later event still lists them
+	st.RemoveGitHubReviewer(ctx, id, "bob") // case-insensitive
+	st.AddGitHubReviewers(ctx, id, []string{"Bob", "carol"})
+	if reviewers() != "carol" {
+		t.Fatalf("explicit removal must stick: %s", reviewers())
+	}
+	// a fresh explicit request brings them back
+	if added, _ := st.RequestReviewer(ctx, id, "Bob", "github"); !added || reviewers() != "Bob,carol" {
+		t.Fatalf("re-request: %s", reviewers())
+	}
+	if added, _ := st.RequestReviewer(ctx, id, "bob", "pandora"); added {
+		t.Fatal("already active: nothing to add")
+	}
+	// admin assignment survives GitHub unrequesting, and removing it works for any source
+	st.RequestReviewer(ctx, id, "dave", "pandora")
+	st.RemoveGitHubReviewer(ctx, id, "dave")
+	if reviewers() != "Bob,carol,dave" {
+		t.Fatalf("a GitHub removal must not unassign an admin-assigned reviewer: %s", reviewers())
+	}
+	if ok, _ := st.RemoveReviewer(ctx, id, "dave"); !ok {
+		t.Fatal("admin removal")
+	}
+	if ok, _ := st.RemoveReviewer(ctx, id, "dave"); ok {
+		t.Fatal("removing twice reports nothing removed")
+	}
+	// removed reviewers drop out of the review queue and the workload stats
+	if l, _ := st.ListPRs(ctx, PRFilter{Reviewer: "dave"}); len(l) != 0 {
+		t.Fatal("removed reviewer still in queue")
+	}
+	if s, _ := st.Stats(ctx); len(s.AwaitingReview) != 2 {
+		t.Fatalf("stats: %+v", s.AwaitingReview)
 	}
 }

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"errors"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -64,13 +65,13 @@ func canView(u *model.User, p *model.PRWithRun) bool {
 	return strings.EqualFold(p.Author, u.GitHubLogin) || isReviewer(p, u.GitHubLogin)
 }
 
-// mayReview: admins and the PR's requested reviewers can decide, but nobody (admins included)
-// decides on their own pull request.
+// mayReview: ONLY a reviewer assigned to this PR can approve or reject it. Being an admin does not
+// count (admins assign reviewers, and may assign themselves), and nobody reviews their own PR.
 func mayReview(u *model.User, p *model.PRWithRun) bool {
 	if u.GitHubLogin == "" || strings.EqualFold(p.Author, u.GitHubLogin) {
 		return false
 	}
-	return model.IsAdmin(u.Role) || isReviewer(p, u.GitHubLogin)
+	return isReviewer(p, u.GitHubLogin)
 }
 
 // canDecide is true while the PR is open and its latest run is waiting for a human.
@@ -147,7 +148,7 @@ func (s *Server) decide(c *gin.Context) {
 		return
 	}
 	if !mayReview(actor, p) {
-		msg := "only an admin or a requested reviewer can review this pull request"
+		msg := "only a reviewer assigned to this pull request can approve or reject it"
 		if strings.EqualFold(p.Author, actor.GitHubLogin) {
 			msg = "you cannot review your own pull request"
 		}
@@ -321,4 +322,87 @@ func (s *Server) startSync(c *gin.Context) {
 		return
 	}
 	c.JSON(202, s.svc.SyncStatus())
+}
+
+var loginPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
+
+// loadOpenPR loads the PR named in the URL for a reviewer change (open PRs only).
+func (s *Server) loadOpenPR(c *gin.Context) (*model.PRWithRun, bool) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "bad id"})
+		return nil, false
+	}
+	p, err := s.store.GetPR(c.Request.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		c.JSON(404, gin.H{"error": "pull request not found"})
+		return nil, false
+	}
+	if err != nil {
+		serverError(c)
+		return nil, false
+	}
+	if p.State != "open" {
+		c.JSON(409, gin.H{"error": "this pull request is closed"})
+		return nil, false
+	}
+	return p, true
+}
+
+// addReviewer (admins): assign a reviewer so that no single person can block a PR.
+func (s *Server) addReviewer(c *gin.Context) {
+	p, ok := s.loadOpenPR(c)
+	if !ok {
+		return
+	}
+	var in struct {
+		Login string `json:"login"`
+	}
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(400, gin.H{"error": "bad request"})
+		return
+	}
+	login := strings.TrimPrefix(strings.TrimSpace(in.Login), "@")
+	if !loginPattern.MatchString(login) {
+		c.JSON(400, gin.H{"error": "enter a GitHub username"})
+		return
+	}
+	if strings.EqualFold(login, p.Author) {
+		c.JSON(400, gin.H{"error": "the author cannot review their own pull request"})
+		return
+	}
+	warning, err := s.svc.AssignReviewer(c.Request.Context(), current(c), p, login)
+	if err != nil {
+		serverError(c)
+		return
+	}
+	s.reviewersResponse(c, p.ID, warning)
+}
+
+// removeReviewer (admins): unassign a reviewer, e.g. someone who is away.
+func (s *Server) removeReviewer(c *gin.Context) {
+	p, ok := s.loadOpenPR(c)
+	if !ok {
+		return
+	}
+	login := strings.TrimPrefix(strings.TrimSpace(c.Param("login")), "@")
+	removed, err := s.svc.UnassignReviewer(c.Request.Context(), current(c), p, login)
+	if err != nil {
+		serverError(c)
+		return
+	}
+	if !removed {
+		c.JSON(404, gin.H{"error": "that user is not a reviewer of this pull request"})
+		return
+	}
+	s.reviewersResponse(c, p.ID, "")
+}
+
+func (s *Server) reviewersResponse(c *gin.Context, prID int64, warning string) {
+	p, err := s.store.GetPR(c.Request.Context(), prID)
+	if err != nil {
+		serverError(c)
+		return
+	}
+	c.JSON(200, gin.H{"reviewers": p.Reviewers, "warning": warning})
 }

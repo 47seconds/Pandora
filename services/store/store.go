@@ -196,3 +196,10 @@ func (s *Store) AddEvent(ctx context.Context, runID int64, kind, detail string) 
 	_, _ = s.db.ExecContext(ctx, `INSERT INTO events (run_id, kind, detail, created_at) VALUES (?, ?, ?, ?)`,
 		runID, kind, detail, now())
 }
+
+// CountEvents counts audit entries of one kind (used by tests and future audit views).
+func (s *Store) CountEvents(ctx context.Context, kind string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE kind=?`, kind).Scan(&n)
+	return n, err
+}

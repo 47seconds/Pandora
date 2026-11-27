@@ -130,8 +130,19 @@ signs a session JWT into an **HttpOnly, SameSite=Lax, Secure** cookie (`PANDORA_
 ## Human review (when the AI says "needs human")
 A run lands in `needs_human` when the AI sees a mismatch, unrelated changes, a truncated diff, or the PR has no
 description. The PR page then shows a **Human review needed** card to whoever may decide:
-- **Who:** admins, or a user who is a *requested reviewer* on that PR. **Nobody reviews their own PR**, admins included.
-  Everyone else with access sees "waiting for human review".
+- **Who:** **only a reviewer assigned to that PR** can approve or reject. Having the admin role does not count, and
+  nobody reviews their own PR. Everyone else with access sees "waiting for human review".
+- **Reviewers are managed by admins and the super-admin**, so one unavailable reviewer never blocks a PR: on the PR page an
+  admin can add or remove reviewers (any GitHub username; the box suggests approved Pandora users). An admin who wants to decide
+  adds themselves, and that is recorded in the audit log (`reviewer_added` / `reviewer_removed`, with who did it). Only open PRs can be
+  changed, and the author cannot be added.
+  Reviewers come from two places: people requested on GitHub, and people an admin assigns here. An admin assignment is also
+  requested on GitHub so the person gets a notification, but that is best effort (GitHub only accepts collaborators): if it fails,
+  the assignment still stands and the admin sees a warning.
+- **Removals stick.** GitHub quietly drops a reviewer from its list once they submit a GitHub review; Pandora does not treat that
+  as a removal, so they can still decide here. Only an explicit removal (by an admin here, or "review request removed" on GitHub)
+  removes someone, and a later webhook or sync does not bring them back. A fresh request does. A GitHub removal never unassigns
+  someone an admin assigned here.
 - **Approve:** the run becomes `ai_passed` (it continues to the next stage once that exists). An optional note is kept.
 - **Reject:** needs a reason (the box is pre-filled with "PR description and code changes do not match."). The run
   becomes `rejected`, Pandora **closes the PR on GitHub** and posts the reason as a PR comment. A later "closed"
@@ -148,13 +159,15 @@ including drafts and closed PRs; only open, non-draft PRs start an AI review.
 On startup (and via **Sync now** in Admin) Pandora backfills the last `PANDORA_BACKFILL_DAYS` (default 90)
 days of PRs from every repo the GitHub App is installed on. Backfilled PRs are recorded for the dashboard but
 are **not** AI-reviewed. Sync needs the GitHub App; it is unavailable with only a personal token.
-Team review requests are not tracked yet (individual reviewers only).
+Team review requests are not tracked yet (individual reviewers only). Reviewers are only ever added by webhooks and sync;
+removals are explicit (see Human review).
 
 ## API (session cookie required)
 - `GET /auth/me`, `POST /auth/logout`: any signed-in account
 - `GET /api/v1/me/prs?state=`, `GET /api/v1/me/reviews`, `GET /api/v1/prs/:id` (includes `decisions` and `can_decide`),
-  `POST /api/v1/prs/:id/decision` `{run_id, decision: approve|reject, reason}` (reviewers/admins, see above): `user`, `admin`
+  `POST /api/v1/prs/:id/decision` `{run_id, decision: approve|reject, reason}` (assigned reviewers only): `user`, `admin`
 - `GET /api/v1/admin/prs?state=&repo=&author=&reviewer=&limit=&offset=`, `GET /api/v1/admin/stats`,
   `GET /api/v1/admin/users`, `PATCH /api/v1/admin/users/:id` `{role, active}` (admin: approve/promote only),
   `DELETE /api/v1/admin/users/:id` (super-admin only),
+  `POST /api/v1/admin/prs/:id/reviewers` `{login}`, `DELETE /api/v1/admin/prs/:id/reviewers/:login`,
   `GET|POST /api/v1/admin/sync`: `admin`

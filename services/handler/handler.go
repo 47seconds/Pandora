@@ -72,6 +72,8 @@ func New(d Deps) *gin.Engine {
 	admin.GET("/stats", s.adminStats)
 	admin.GET("/users", s.listUsers)
 	admin.PATCH("/users/:id", s.updateUser)
+	admin.POST("/prs/:id/reviewers", s.addReviewer)
+	admin.DELETE("/prs/:id/reviewers/:login", s.removeReviewer)
 	admin.DELETE("/users/:id", s.deleteUser) // super-admin only (checked in the handler)
 	admin.GET("/sync", s.syncStatus)
 	admin.POST("/sync", s.startSync)

@@ -79,6 +79,10 @@ tbody tr.click:hover { background: var(--bg); }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .chips { display: flex; gap: 4px; flex-wrap: wrap; }
 .chip { background: var(--grey-bg); color: var(--grey); border-radius: 999px; padding: 0 8px; font-size: 12px; }
+.chip button.x { border: 0; background: transparent; padding: 0 2px; margin-left: 2px; cursor: pointer; color: inherit; line-height: 1; font-size: 14px; }
+.chip button.x:hover { color: var(--red); }
+#reviewers form { margin: 10px 0 0; }
+#reviewers input { min-width: 220px; }
 .badge { display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
 .b-green { background: var(--green-bg); color: var(--green); }
 .b-amber { background: var(--amber-bg); color: var(--amber); }

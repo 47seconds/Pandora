@@ -45,25 +45,68 @@ func b2i(b bool) int {
 	return 0
 }
 
-// SetReviewers replaces the requested-reviewer set of a PR.
-func (s *Store) SetReviewers(ctx context.Context, prID int64, logins []string) error {
+// AddGitHubReviewers records reviewers GitHub reports as requested. It only ever adds:
+// GitHub drops a reviewer from its list once they submit a GitHub review, and that must not
+// take away their ability to decide here. Removals are explicit (RemoveGitHubReviewer or an
+// admin removing them), and a removal stays removed.
+func (s *Store) AddGitHubReviewers(ctx context.Context, prID int64, logins []string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM pr_reviewers WHERE pr_id=?`, prID); err != nil {
-		return err
-	}
 	for _, l := range logins {
 		if l == "" {
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO pr_reviewers (pr_id, login) VALUES (?, ?)`, prID, l); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO pr_reviewers (pr_id, login, source) VALUES (?, ?, 'github')`, prID, l); err != nil {
 			return err
 		}
 	}
 	return tx.Commit()
+}
+
+// RequestReviewer is an explicit new review request: it also revives an earlier removal.
+// source is "github" (webhook) or "pandora" (an admin). It reports whether the reviewer was
+// not already an active reviewer.
+func (s *Store) RequestReviewer(ctx context.Context, prID int64, login, source string) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	var removed int
+	err = tx.QueryRowContext(ctx, `SELECT removed FROM pr_reviewers WHERE pr_id=? AND login=?`, prID, login).Scan(&removed)
+	active := err == nil && removed == 0
+	if err != nil && err != sql.ErrNoRows {
+		return false, err
+	}
+	if active {
+		return false, nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO pr_reviewers (pr_id, login, source, removed) VALUES (?, ?, ?, 0)
+ON CONFLICT (pr_id, login) DO UPDATE SET removed=0, source=excluded.source`, prID, login, source); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
+}
+
+// RemoveReviewer unassigns a reviewer (soft delete). It reports whether an active reviewer was removed.
+func (s *Store) RemoveReviewer(ctx context.Context, prID int64, login string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE pr_reviewers SET removed=1 WHERE pr_id=? AND login=? AND removed=0`, prID, login)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// RemoveGitHubReviewer applies GitHub's own "review request removed" event. It never touches a
+// reviewer an admin assigned here.
+func (s *Store) RemoveGitHubReviewer(ctx context.Context, prID int64, login string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE pr_reviewers SET removed=1 WHERE pr_id=? AND login=? AND source='github'`, prID, login)
+	return err
 }
 
 type PRFilter struct {
@@ -124,7 +167,7 @@ func (s *Store) ListPRs(ctx context.Context, f PRFilter) ([]model.PRWithRun, err
 		args = append(args, f.Repo)
 	}
 	if f.Reviewer != "" {
-		where = append(where, "EXISTS (SELECT 1 FROM pr_reviewers rv WHERE rv.pr_id = p.id AND rv.login = ?)")
+		where = append(where, "EXISTS (SELECT 1 FROM pr_reviewers rv WHERE rv.pr_id = p.id AND rv.login = ? AND rv.removed = 0)")
 		args = append(args, f.Reviewer)
 	}
 	q := prSelect
@@ -178,7 +221,7 @@ func (s *Store) attachReviewers(ctx context.Context, prs []model.PRWithRun) erro
 		ph[i] = "?"
 		args[i] = p.ID
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT pr_id, login FROM pr_reviewers WHERE pr_id IN (`+strings.Join(ph, ",")+`) ORDER BY login`, args...)
+	rows, err := s.db.QueryContext(ctx, `SELECT pr_id, login FROM pr_reviewers WHERE removed=0 AND pr_id IN (`+strings.Join(ph, ",")+`) ORDER BY login COLLATE NOCASE`, args...)
 	if err != nil {
 		return err
 	}
@@ -244,7 +287,7 @@ WHERE p.state='open' GROUP BY 1`)
 	if st.TopAuthors, err = counts(`SELECT author, SUM(state='open'), COUNT(*) FROM prs WHERE author<>'' GROUP BY author COLLATE NOCASE ORDER BY 3 DESC, 1 LIMIT 10`); err != nil {
 		return nil, err
 	}
-	if st.AwaitingReview, err = counts(`SELECT rv.login, COUNT(*), COUNT(*) FROM pr_reviewers rv JOIN prs p ON p.id=rv.pr_id WHERE p.state='open' GROUP BY rv.login ORDER BY 2 DESC, 1 LIMIT 10`); err != nil {
+	if st.AwaitingReview, err = counts(`SELECT rv.login, COUNT(*), COUNT(*) FROM pr_reviewers rv JOIN prs p ON p.id=rv.pr_id WHERE p.state='open' AND rv.removed=0 GROUP BY rv.login ORDER BY 2 DESC, 1 LIMIT 10`); err != nil {
 		return nil, err
 	}
 	if st.ByRepo, err = counts(`SELECT repo, SUM(state='open'), COUNT(*) FROM prs GROUP BY repo ORDER BY 3 DESC, 1 LIMIT 15`); err != nil {

@@ -87,10 +87,25 @@ func TestPRTrackingWithoutReview(t *testing.T) {
 	if got, _ := a.st.ListPRs(ctx, store.PRFilter{Reviewer: "bob"}); len(got) != 1 { // case-insensitive
 		t.Fatalf("reviewer filter: %d", len(got))
 	}
-	// removing a reviewer replaces the set
-	postEvent(t, a, "pull_request", pr{action: "review_request_removed", number: 11, sha: "d1", body: "wip", author: "alice", draft: true, reviewers: []string{"carol"}}.event(), true)
+	// GitHub drops people from its list after they review there; an event that no longer lists
+	// "bob" must NOT take away his ability to decide here
+	postEvent(t, a, "pull_request", pr{action: "edited", number: 11, sha: "d1", body: "wip", author: "alice", draft: true, reviewers: []string{"carol"}}.event(), true)
+	if got, _ := a.st.ListPRs(ctx, store.PRFilter{Reviewer: "bob"}); len(got) != 1 {
+		t.Fatalf("bob must stay a reviewer: %d", len(got))
+	}
+	// only an explicit removal on GitHub removes him
+	postEvent(t, a, "pull_request", pr{action: "review_request_removed", number: 11, sha: "d1", body: "wip", author: "alice", draft: true, reviewers: []string{"carol"}, reviewer: "bob"}.event(), true)
 	if got, _ := a.st.ListPRs(ctx, store.PRFilter{Reviewer: "bob"}); len(got) != 0 {
-		t.Fatalf("bob should be removed: %d", len(got))
+		t.Fatalf("explicitly removed bob should be gone: %d", len(got))
+	}
+	// and a later event listing him again does not resurrect him, but a fresh request does
+	postEvent(t, a, "pull_request", pr{action: "edited", number: 11, sha: "d1", body: "wip", author: "alice", draft: true, reviewers: []string{"bob", "carol"}}.event(), true)
+	if got, _ := a.st.ListPRs(ctx, store.PRFilter{Reviewer: "bob"}); len(got) != 0 {
+		t.Fatal("removal must stick")
+	}
+	postEvent(t, a, "pull_request", pr{action: "review_requested", number: 11, sha: "d1", body: "wip", author: "alice", draft: true, reviewers: []string{"bob", "carol"}, reviewer: "bob"}.event(), true)
+	if got, _ := a.st.ListPRs(ctx, store.PRFilter{Reviewer: "bob"}); len(got) != 1 {
+		t.Fatal("a new request revives the reviewer")
 	}
 }
 

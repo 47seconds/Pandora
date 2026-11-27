@@ -34,6 +34,14 @@ func approveUser(t *testing.T, a *testApp, boss *http.Client, c *http.Client) {
 	}
 }
 
+// assign has an admin make login a reviewer of the PR through the API.
+func assign(t *testing.T, a *testApp, admin *http.Client, prID int, login string) {
+	t.Helper()
+	if code, b := call(t, admin, "POST", a.url+"/api/v1/admin/prs/"+itoa(prID)+"/reviewers", map[string]any{"login": login}); code != 200 {
+		t.Fatalf("assign %s: %d %s", login, code, b)
+	}
+}
+
 func decideCall(t *testing.T, a *testApp, c *http.Client, prID int, body map[string]any) (int, map[string]any) {
 	t.Helper()
 	code, b := call(t, c, "POST", a.url+"/api/v1/prs/"+itoa(prID)+"/decision", body)
@@ -65,14 +73,24 @@ func TestDecisionPermissions(t *testing.T) {
 			}
 			continue
 		}
-		want := who == "reviewer" || who == "admin"
+		want := who == "reviewer" // being an admin is not enough: only an assigned reviewer decides
 		if got := asMap(b)["can_decide"]; got != want {
 			t.Fatalf("can_decide for %s = %v, want %v", who, got, want)
 		}
 	}
+	// an admin who is not a reviewer cannot decide either
+	if code, m := decideCall(t, a, boss, prID, body); code != 403 || !strings.Contains(m["error"].(string), "assigned") {
+		t.Fatalf("admin who is not a reviewer: %d %v", code, m)
+	}
 	// nothing above changed the run
 	if st := runStatus(t, a, runID); st != model.StatusNeedsHuman {
 		t.Fatalf("refused attempts must not change anything: %s", st)
+	}
+	// ...but once an admin assigns themselves, they can
+	assign(t, a, boss, prID, "Boss")
+	_, b := call(t, boss, "GET", a.url+"/api/v1/prs/"+itoa(prID), nil)
+	if asMap(b)["can_decide"] != true {
+		t.Fatal("an assigned admin must be able to decide")
 	}
 }
 
@@ -129,6 +147,7 @@ func TestApproveByReviewer(t *testing.T) {
 func TestRejectClosesPR(t *testing.T) {
 	a, prID, runID := needsHuman(t, "alice", "bob")
 	boss := signIn(t, a, "boss")
+	assign(t, a, boss, prID, "Boss")
 
 	// a reason is mandatory
 	for _, r := range []string{"", "   \n "} {
@@ -171,6 +190,7 @@ func TestRejectClosesPR(t *testing.T) {
 func TestRejectRollsBackWhenGitHubRefuses(t *testing.T) {
 	a, prID, runID := needsHuman(t, "alice", "bob")
 	boss := signIn(t, a, "boss")
+	assign(t, a, boss, prID, "Boss")
 	a.gh.mu.Lock()
 	a.gh.failClose = true
 	a.gh.mu.Unlock()
@@ -197,6 +217,7 @@ func TestRejectRollsBackWhenGitHubRefuses(t *testing.T) {
 func TestDecisionRefusedForStaleCommit(t *testing.T) {
 	a, prID, runID := needsHuman(t, "alice", "bob")
 	boss := signIn(t, a, "boss")
+	assign(t, a, boss, prID, "Boss")
 	// the author pushes again (new empty-description run); the reviewer's page still shows the old run
 	a.gh.mu.Lock()
 	a.gh.head = "bbb222"
@@ -228,6 +249,10 @@ func TestAdminCannotReviewOwnPR(t *testing.T) {
 	if asMap(b)["can_decide"] != false {
 		t.Fatal("UI must not offer self-approval")
 	}
+	// and assigning the author as their own reviewer is refused outright
+	if code, _ := call(t, boss, "POST", a.url+"/api/v1/admin/prs/"+itoa(prID)+"/reviewers", map[string]any{"login": "boss"}); code != 400 {
+		t.Fatalf("author as reviewer: %d", code)
+	}
 }
 
 func TestNeedsHumanOnlyAndPendingBlocked(t *testing.T) {
@@ -237,6 +262,7 @@ func TestNeedsHumanOnlyAndPendingBlocked(t *testing.T) {
 	postEvent(t, a, "pull_request", pr{action: "opened", sha: "aaa111", body: "add hello", author: "alice"}.event(), true)
 	a.svc.Wait()
 	prs, _ := a.st.ListPRs(context.Background(), store.PRFilter{})
+	assign(t, a, boss, int(prs[0].ID), "Boss")
 	if code, _ := decideCall(t, a, boss, int(prs[0].ID), map[string]any{"run_id": prs[0].LatestRun.ID, "decision": "approve"}); code != 409 {
 		t.Fatalf("ai_passed run: %d", code)
 	}

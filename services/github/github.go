@@ -70,7 +70,11 @@ type PREvent struct {
 	Action      string    `json:"action"`
 	Number      int       `json:"number"`
 	PullRequest PRPayload `json:"pull_request"`
-	Repository  struct {
+	// set on review_requested / review_request_removed (absent for team requests)
+	RequestedReviewer struct {
+		Login string `json:"login"`
+	} `json:"requested_reviewer"`
+	Repository struct {
 		FullName string `json:"full_name"`
 	} `json:"repository"`
 }
@@ -176,6 +180,27 @@ func (c *Client) GetDiff(ctx context.Context, repo string, n, maxBytes int) (dif
 		return string(b[:maxBytes]), true, nil
 	}
 	return string(b), false, nil
+}
+
+// RequestReviewers asks GitHub to request a review from users. GitHub only accepts collaborators
+// with access to the repo, and never the PR's author.
+func (c *Client) RequestReviewers(ctx context.Context, repo string, n int, logins []string) error {
+	resp, err := c.do(ctx, repo, "POST", fmt.Sprintf("/repos/%s/pulls/%d/requested_reviewers", repo, n), jsonAccept, map[string][]string{"reviewers": logins})
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// RemoveReviewers withdraws review requests on GitHub.
+func (c *Client) RemoveReviewers(ctx context.Context, repo string, n int, logins []string) error {
+	resp, err := c.do(ctx, repo, "DELETE", fmt.Sprintf("/repos/%s/pulls/%d/requested_reviewers", repo, n), jsonAccept, map[string][]string{"reviewers": logins})
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
 }
 
 // ClosePR closes a pull request without merging it.

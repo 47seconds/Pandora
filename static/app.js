@@ -157,27 +157,64 @@
     if (rid !== state.rid) return;
     const { pr, runs, decisions = [], can_decide: canDecide = false } = data;
     const latest = runs[0];
+    const admin = isAdmin(state.user.role) && pr.state === 'open';
+    let users = [];
+    if (admin) { try { users = await api('/api/v1/admin/users'); } catch (e) { if (e.message === 'signed out') return; } }
+    if (rid !== state.rid) return;
+    const flash = state.flash || ''; state.flash = '';
     const gh = 'https://github.com/' + pr.repo + '/pull/' + pr.number;
     $('main').innerHTML = `
       <a class="back" id="back" href="#/my">← Back</a>
       <h1>${esc(pr.title) || '(no title)'} ${prStatus(pr)}</h1>
       <p class="muted"><span class="mono">${esc(pr.repo)}#${pr.number}</span> · by ${esc(pr.author)} · into ${esc(pr.base_ref || 'main')} ·
         <a href="${esc(gh)}" target="_blank" rel="noopener noreferrer">View on GitHub</a></p>
-      ${pr.reviewers.length ? `<p>Requested reviewers: <span class="chips">${pr.reviewers.map((r) => `<span class="chip">${esc(r)}</span>`).join('')}</span></p>` : ''}
-      ${decideCard(pr, latest, canDecide)}
+      ${decideCard(pr, latest, canDecide, admin)}
+      ${reviewersCard(pr, admin, users, flash)}
       <h2>AI review history</h2>
       <div class="card">${runs.length ? runs.map((r, i) => runHTML(r, i === 0, decisions.filter((d) => d.run_id === r.id))).join('') : '<div class="empty">No AI review has run for this PR.</div>'}</div>`;
     $('back').onclick = (e) => { if (history.length > 1) { e.preventDefault(); history.back(); } };
     if (canDecide) wireDecision(rid, pr, latest);
+    if (admin) wireReviewers(rid, pr);
+  }
+
+  // Everyone with access sees who the reviewers are. Admins can add and remove them, so one
+  // unavailable reviewer never blocks a pull request.
+  function reviewersCard(pr, admin, users, flash) {
+    const have = new Set(pr.reviewers.map((r) => r.toLowerCase()));
+    const sugg = users.filter((u) => u.active && u.role !== 'pending' && u.github_login && !have.has(u.github_login.toLowerCase())
+      && u.github_login.toLowerCase() !== pr.author.toLowerCase());
+    const chip = (r) => `<span class="chip">@${esc(r)}${admin ? ` <button class="x" data-login="${esc(r)}" aria-label="Remove ${esc(r)}" title="Remove ${esc(r)}">×</button>` : ''}</span>`;
+    return `<div class="card pad" id="reviewers"><h2>Reviewers</h2>
+      <div class="chips">${pr.reviewers.length ? pr.reviewers.map(chip).join('') : '<span class="muted">No reviewer assigned.</span>'}</div>
+      ${admin ? `<form id="addrev" class="toolbar">
+        <input id="revlogin" list="revusers" placeholder="GitHub username" aria-label="Reviewer GitHub username" maxlength="39" autocomplete="off">
+        <datalist id="revusers">${sugg.map((u) => `<option value="${esc(u.github_login)}">${esc(u.name)}</option>`).join('')}</datalist>
+        <button class="primary" type="submit">Add reviewer</button></form>` : ''}
+      <div class="muted" id="revwarn">${esc(flash)}</div><div class="error" id="reverr"></div></div>`;
+  }
+
+  function wireReviewers(rid, pr) {
+    const run = async (method, path, body) => {
+      $('reverr').textContent = '';
+      try {
+        const r = await api('/api/v1/admin/prs/' + pr.id + '/reviewers' + path, { method, body: body && JSON.stringify(body) });
+        state.flash = r.warning || '';
+        if (rid === state.rid) renderPR(rid, pr.id); // reviewers decide who may act: re-render the whole page
+      } catch (e) { if (e.message !== 'signed out') $('reverr').textContent = e.message; }
+    };
+    $('addrev').onsubmit = (e) => { e.preventDefault(); const l = $('revlogin').value.trim(); if (l) run('POST', '', { login: l }); };
+    document.querySelectorAll('#reviewers button.x').forEach((b) => { b.onclick = () => run('DELETE', '/' + encodeURIComponent(b.dataset.login)); });
   }
 
   const DEFAULT_REJECT_REASON = 'PR description and code changes do not match.';
 
   // The AI could not confirm the PR matches its description: a human decides.
-  function decideCard(pr, latest, canDecide) {
+  function decideCard(pr, latest, canDecide, admin) {
     if (!latest || latest.status !== 'needs_human' || pr.state !== 'open') return '';
     if (!canDecide) {
-      return '<div class="banner"><strong>Waiting for human review.</strong> A requested reviewer or an admin needs to approve or reject this pull request.</div>';
+      const none = pr.reviewers.length === 0;
+      return `<div class="banner"><strong>Waiting for human review.</strong> ${none ? 'No reviewer is assigned. ' : ''}Only a reviewer assigned to this pull request can approve or reject it.${
+        admin ? ' Add a reviewer below (you can add yourself).' : ''}</div>`;
     }
     return `<div class="card pad decide">
       <h2>Human review needed</h2>

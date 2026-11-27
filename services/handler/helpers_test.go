@@ -36,14 +36,16 @@ const (
 
 // fakeGH plays both api.github.com and github.com (OAuth) for the tests.
 type fakeGH struct {
-	mu        sync.Mutex
-	head      string
-	body      string
-	statuses  []string
-	comments  int
-	bodies    []string // PR comment bodies posted
-	closed    []string // PRs closed through the API
-	failClose bool
+	mu            sync.Mutex
+	head          string
+	body          string
+	statuses      []string
+	comments      int
+	bodies        []string // PR comment bodies posted
+	closed        []string // PRs closed through the API
+	failClose     bool
+	reviewerCalls []string // "POST login" / "DELETE login" on /requested_reviewers
+	failReviewers bool
 }
 
 var ghUsers = map[string]map[string]any{
@@ -96,6 +98,21 @@ func (f *fakeGH) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.Unmarshal(b, &m)
 		f.bodies = append(f.bodies, m["body"])
 		w.WriteHeader(201)
+		io.WriteString(w, "{}")
+	case strings.HasSuffix(r.URL.Path, "/requested_reviewers"):
+		b, _ := io.ReadAll(r.Body)
+		var m struct {
+			Reviewers []string `json:"reviewers"`
+		}
+		json.Unmarshal(b, &m)
+		if f.failReviewers {
+			w.WriteHeader(422)
+			io.WriteString(w, `{"message":"Reviews may only be requested from collaborators."}`)
+			return
+		}
+		for _, l := range m.Reviewers {
+			f.reviewerCalls = append(f.reviewerCalls, r.Method+" "+l)
+		}
 		io.WriteString(w, "{}")
 	case r.Method == "PATCH" && strings.Contains(r.URL.Path, "/pulls/"):
 		if f.failClose {
@@ -239,6 +256,7 @@ type pr struct {
 	number                           int
 	draft, merged                    bool
 	reviewers                        []string
+	reviewer                         string // the single user a review_requested / review_request_removed event is about
 }
 
 func (p pr) event() map[string]any {
@@ -256,10 +274,14 @@ func (p pr) event() map[string]any {
 	for _, r := range p.reviewers {
 		rs = append(rs, map[string]string{"login": r})
 	}
-	return map[string]any{"action": p.action, "number": n,
+	ev := map[string]any{"action": p.action, "number": n,
 		"pull_request": map[string]any{"number": n, "title": "t", "body": p.body, "state": state, "draft": p.draft, "merged": p.merged,
 			"created_at": "2026-11-20T10:00:00Z", "updated_at": "2026-11-21T10:00:00Z",
 			"head": map[string]any{"sha": p.sha}, "base": map[string]any{"ref": "main"},
 			"user": map[string]any{"login": author}, "requested_reviewers": rs},
 		"repository": map[string]any{"full_name": "org/repo"}}
+	if p.reviewer != "" {
+		ev["requested_reviewer"] = map[string]any{"login": p.reviewer}
+	}
+	return ev
 }

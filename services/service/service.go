@@ -70,6 +70,20 @@ func (o *Service) HandlePullRequest(ctx context.Context, ev github.PREvent) (Out
 		return Outcome{}, err
 	}
 
+	// Explicit reviewer changes made on GitHub. Anything else only ever adds reviewers.
+	if login := ev.RequestedReviewer.Login; login != "" {
+		var rerr error
+		switch ev.Action {
+		case "review_requested":
+			_, rerr = o.store.RequestReviewer(ctx, prID, login, "github")
+		case "review_request_removed":
+			rerr = o.store.RemoveGitHubReviewer(ctx, prID, login)
+		}
+		if rerr != nil {
+			return Outcome{}, rerr
+		}
+	}
+
 	switch ev.Action {
 	case "closed":
 		o.supersede(ctx, prID, 0)
@@ -112,7 +126,7 @@ func (o *Service) saveGitHubPR(ctx context.Context, repo string, n int, p github
 	if err != nil {
 		return 0, err
 	}
-	return id, o.store.SetReviewers(ctx, id, p.ReviewerLogins())
+	return id, o.store.AddGitHubReviewers(ctx, id, p.ReviewerLogins())
 }
 
 // Recover restarts runs interrupted by a service restart.
