@@ -4,9 +4,13 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 
@@ -112,6 +116,11 @@ func (s *Server) webhook(c *gin.Context) {
 
 // mountDashboard serves the static dashboard build at /dashboard/. Drop any built
 // frontend into the static dir (it needs an index.html); no Go changes required.
+//
+// Caching: CDNs (Cloudflare caches .js/.css for hours by default) would otherwise keep serving
+// an old app.js next to a new index.html. So index.html is rewritten on the fly to reference
+// each local asset as name?v=<modtime-size>, which changes whenever the file does, and
+// every response asks caches to revalidate.
 func (s *Server) mountDashboard(r *gin.Engine) {
 	dir := s.cfg.StaticDir
 	if dir == "" {
@@ -122,10 +131,48 @@ func (s *Server) mountDashboard(r *gin.Engine) {
 		return
 	}
 	r.GET("/", func(c *gin.Context) { c.Redirect(http.StatusFound, "/dashboard/") })
-	dash := r.Group("/dashboard", func(c *gin.Context) {
+	fs := gin.Dir(dir, false) // false: no directory listings
+	r.GET("/dashboard/*filepath", func(c *gin.Context) {
 		c.Header("Content-Security-Policy", "default-src 'self'; img-src 'self' https://avatars.githubusercontent.com; frame-ancestors 'none'")
 		c.Header("X-Content-Type-Options", "nosniff")
 		c.Header("Referrer-Policy", "no-referrer")
+		c.Header("Cache-Control", "no-cache")
+		p := c.Param("filepath")
+		if p == "/" || p == "/index.html" {
+			html, err := os.ReadFile(filepath.Join(dir, "index.html"))
+			if err != nil {
+				c.String(http.StatusNotFound, "dashboard not installed")
+				return
+			}
+			c.Data(http.StatusOK, "text/html; charset=utf-8", versionAssets(dir, html))
+			return
+		}
+		if f, err := fs.Open(p); err != nil {
+			c.String(http.StatusNotFound, "not found")
+			return
+		} else {
+			st, err := f.Stat()
+			f.Close()
+			if err != nil || st.IsDir() { // never serve directories, not even an empty listing
+				c.String(http.StatusNotFound, "not found")
+				return
+			}
+		}
+		c.FileFromFS(p, fs)
 	})
-	dash.StaticFS("/", gin.Dir(dir, false)) // false: no directory listings
+}
+
+var assetRef = regexp.MustCompile(`(src|href)="([A-Za-z0-9_.\-]+\.(?:js|css))"`)
+
+// versionAssets appends ?v=<modtime-size> to local .js/.css references in the page.
+func versionAssets(dir string, html []byte) []byte {
+	return assetRef.ReplaceAllFunc(html, func(m []byte) []byte {
+		sub := assetRef.FindSubmatch(m)
+		fi, err := os.Stat(filepath.Join(dir, string(sub[2])))
+		if err != nil {
+			return m
+		}
+		return []byte(fmt.Sprintf(`%s="%s?v=%s-%s"`, sub[1], sub[2],
+			strconv.FormatInt(fi.ModTime().Unix(), 36), strconv.FormatInt(fi.Size(), 36)))
+	})
 }

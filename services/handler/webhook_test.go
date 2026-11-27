@@ -2,8 +2,10 @@ package handler_test
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -115,7 +117,10 @@ func TestAllowedReposAndSignature(t *testing.T) {
 
 func TestDashboardServed(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>pandora</html>"), 0o644)
+	os.WriteFile(filepath.Join(dir, "index.html"), []byte(`<html><link rel="stylesheet" href="style.css"><script src="theme.js"></script><script src="app.js"></script><img src="https://x/y.js"></html>`), 0o644)
+	os.WriteFile(filepath.Join(dir, "app.js"), []byte("console.log(1)"), 0o644)
+	os.WriteFile(filepath.Join(dir, "style.css"), []byte("a{}"), 0o644)
+	os.MkdirAll(filepath.Join(dir, "sub"), 0o755)
 	a := newApp(t, func(c *config.Config) { c.StaticDir = dir }, false)
 	c := browser()
 	if r, err := c.Get(a.url + "/"); err != nil || r.StatusCode != 302 || r.Header.Get("Location") != "/dashboard/" {
@@ -128,6 +133,41 @@ func TestDashboardServed(t *testing.T) {
 	csp := r.Header.Get("Content-Security-Policy")
 	if !strings.Contains(csp, "default-src 'self'") || !strings.Contains(csp, "avatars.githubusercontent.com") {
 		t.Fatalf("CSP: %q", csp)
+	}
+	if r.Header.Get("Cache-Control") != "no-cache" {
+		t.Fatalf("caches must revalidate: %q", r.Header.Get("Cache-Control"))
+	}
+	body, _ := io.ReadAll(r.Body)
+	html := string(body)
+	for _, want := range []string{`href="style.css?v=`, `src="app.js?v=`} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("asset not versioned (%s): %s", want, html)
+		}
+	}
+	if strings.Contains(html, `theme.js?v=`) { // file does not exist: left untouched
+		t.Fatalf("missing file must not get a version: %s", html)
+	}
+	if !strings.Contains(html, `src="https://x/y.js"`) {
+		t.Fatalf("external URLs must be untouched: %s", html)
+	}
+	// the version changes when the file changes (so a CDN fetches the new file)
+	m := regexp.MustCompile(`app\.js\?v=([a-z0-9-]+)`)
+	v1 := m.FindStringSubmatch(html)[1]
+	os.WriteFile(filepath.Join(dir, "app.js"), []byte("console.log('a much longer new version')"), 0o644)
+	r, _ = c.Get(a.url + "/dashboard/index.html")
+	body, _ = io.ReadAll(r.Body)
+	if v2 := m.FindStringSubmatch(string(body))[1]; v2 == v1 {
+		t.Fatalf("version must change with the file: %s", v1)
+	}
+	// assets are served (with the same cache policy), directories are not listed, unknown is 404
+	if r, _ = c.Get(a.url + "/dashboard/app.js?v=anything"); r.StatusCode != 200 || r.Header.Get("Cache-Control") != "no-cache" {
+		t.Fatalf("asset: %d %q", r.StatusCode, r.Header.Get("Cache-Control"))
+	}
+	if r, _ = c.Get(a.url + "/dashboard/sub/"); r.StatusCode != 404 {
+		t.Fatalf("directory listing must be off: %d", r.StatusCode)
+	}
+	if r, _ = c.Get(a.url + "/dashboard/nope.js"); r.StatusCode != 404 {
+		t.Fatalf("unknown file: %d", r.StatusCode)
 	}
 	if code, _ := call(t, c, "GET", a.url+"/api/v1/me/prs", nil); code != 401 {
 		t.Fatalf("api must stay protected: %d", code)
