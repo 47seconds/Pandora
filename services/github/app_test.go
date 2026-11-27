@@ -112,3 +112,44 @@ func TestBadKey(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestListRecentPRsPaginatesAndStopsAtCutoff(t *testing.T) {
+	_, pemText := newKey(t)
+	var pages []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/app/installations":
+			json.NewEncoder(w).Encode([]map[string]any{{"id": 5}})
+		case r.URL.Path == "/app/installations/5/access_tokens":
+			w.WriteHeader(201)
+			json.NewEncoder(w).Encode(map[string]any{"token": "inst", "expires_at": time.Now().Add(time.Hour)})
+		case r.URL.Path == "/installation/repositories":
+			if r.Header.Get("Authorization") != "Bearer inst" {
+				w.WriteHeader(401)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{"repositories": []map[string]any{{"full_name": "org/a"}}})
+		case r.URL.Path == "/repos/org/a/pulls":
+			pages = append(pages, r.URL.Query().Get("page"))
+			// newest first; the 3rd item is older than the cutoff so paging must stop there
+			json.NewEncoder(w).Encode([]map[string]any{
+				{"number": 3, "updated_at": "2026-11-20T00:00:00Z"},
+				{"number": 2, "updated_at": "2026-11-10T00:00:00Z"},
+				{"number": 1, "updated_at": "2026-01-01T00:00:00Z"},
+			})
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	a, _ := NewAppAuth("1", pemText, srv.URL)
+	var got []int
+	err := a.ListRecentPRs(context.Background(), time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
+		func(repo string, p PRPayload) error { got = append(got, p.Number); return nil })
+	if err != nil || len(got) != 2 || got[0] != 3 || got[1] != 2 {
+		t.Fatalf("got=%v err=%v", got, err)
+	}
+	if len(pages) != 1 {
+		t.Fatalf("must stop paging at the cutoff: %v", pages)
+	}
+}

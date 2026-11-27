@@ -11,10 +11,10 @@ Runs on the UAT server. GitHub only sends it events; all review work happens her
       config/               env config
       model/                domain types: PR, Run, statuses
       store/                SQLite persistence + migrations/ (versioned .sql schema)
-      auth/                 JWT + password hashing
-      handler/              gin routes + HTTP handlers (webhook, admin API)
+      auth/                 session token (JWT) for the login cookie
+      handler/              gin routes + HTTP handlers (webhook, GitHub login, dashboard API)
       service/              pipeline logic (supersede, run lifecycle)
-      github/               webhook verification + GitHub REST client
+      github/               webhook verification, GitHub REST client, App auth, OAuth, PR sync
       review/               AI reviewer (anthropic, mock) + verdict policy
     static/                 dashboard (plain HTML/CSS/JS, no build); served at /dashboard/
     sources/<service>/      per-service test definitions (smoke_test, basic_test, feature_test)
@@ -48,12 +48,21 @@ self-hosted runner on the UAT box (`runs-on: self-hosted`), or use a direct repo
 (no workflow at all). The endpoint accepts both.
 
 ## Dashboard
-Open `/dashboard/` (`/` redirects there). Log in with a Pandora account: PR list with live status
-(auto-refreshes every 15s), per-PR review history with the AI report, and a Users page for admins
-(roles, GitHub login, deactivate). It is static files in `static/` calling the API above; the page itself is
-public but all data needs the JWT. To use a real frontend later, put its build output in `static/`
-(must contain `index.html`, relative asset paths) or point `PANDORA_STATIC_DIR` elsewhere.
-Strict CSP is set (no inline scripts/styles), so a build must not rely on them.
+Open `/dashboard/` (`/` redirects there) and **Continue with GitHub**. Static files in `static/`
+(no build step) calling the JSON API; the page is public, all data needs the session.
+
+| Role | Sees |
+|---|---|
+| `pending` (every new account) | Settings only, with an "awaiting approval" notice |
+| `user` | **My pull requests** (author = your GitHub login), **Review pull requests** (you are a requested reviewer), **Settings** |
+| `admin` | all of the above plus **Admin**: overview analytics, all PRs (filter by state/repo/author/reviewer), Users (approve, promote, deactivate), manual sync |
+
+Settings shows your GitHub username, name, email, avatar and role (read-only, refreshed from GitHub at each
+sign-in) and a Light / Dark / System theme switch (remembered in the browser).
+Users can only open PRs they authored or review; an admin can open any.
+
+To use a real frontend later, put its build output in `static/` (needs `index.html`, relative asset paths) or point
+`PANDORA_STATIC_DIR` elsewhere. A strict CSP is set (no inline scripts/styles; avatars allowed from GitHub).
 
 ## AI provider
 `PANDORA_REVIEW_PROVIDER`: `anthropic` (needs `ANTHROPIC_API_KEY`, `sk-ant-...`), `openrouter`
@@ -70,6 +79,10 @@ Create it once (GitHub org -> Settings -> Developer settings -> GitHub Apps -> N
   `https://<pandora>/webhook/github` + the same secret as `PANDORA_WEBHOOK_SECRET` and subscribe to
   "Pull request", and then the workflow is optional.
 - **Repository permissions:** Pull requests: Read & write; Commit statuses: Read & write; Metadata: Read.
+- **Sign in with GitHub:** callback URL `https://<pandora>/auth/github/callback`; generate a **client secret**
+  (set `PANDORA_GITHUB_CLIENT_ID` / `PANDORA_GITHUB_CLIENT_SECRET`); under Account permissions set
+  **Email addresses: Read** (optional, lets Pandora show a private primary email). Keep "Expire user authorization
+  tokens" on: Pandora uses the user token once at sign-in and discards it.
   (Later phases will need more, e.g. Contents: Read to run tests, Checks. Changing permissions makes
   GitHub ask the org to re-approve.)
 - Generate a **private key** (.pem) and note the **App ID**. Install the app on the repos to review.
@@ -86,15 +99,28 @@ The schema lives in `services/store/migrations/NNNN_name.sql`, embedded in the b
 To change it, **add a new file** (e.g. `0002_add_stage_results.sql`); never edit one that has shipped.
 Tables: `prs`, `runs`, `events`, `users`, `schema_migrations`.
 
-## Auth
-JWT (HS256, bcrypt passwords). Roles: `admin`, `reviewer`, `developer`.
-- `POST /auth/signup` `{email,name,password}` -> token. First signup (or `PANDORA_BOOTSTRAP_ADMIN_EMAIL`) is admin; others are developers.
-- `POST /auth/login` `{email,password}` -> `{token, expires_at, user}`
-- `GET /auth/me`
-- Send `Authorization: Bearer <token>`. The user is re-checked in the DB on each request, so deactivation and role changes apply instantly.
+## Login and roles
+GitHub is the only way in (no passwords). `GET /auth/github/login` -> GitHub -> `/auth/github/callback`, which
+signs a session JWT into an **HttpOnly, SameSite=Lax, Secure** cookie (`PANDORA_JWT_TTL_HOURS`, default 24).
+- Anyone with a GitHub account can sign in, but a new account is `pending` until an admin approves it.
+- `PANDORA_BOOTSTRAP_ADMIN_GITHUB` (a GitHub username) is always an admin, so the first admin can exist.
+  It is re-applied at every sign-in, so that account cannot be demoted while the setting is present.
+- Accounts are keyed by GitHub's numeric id; a renamed GitHub username follows the same account.
+- The user is re-read from the DB on every request: deactivation and role changes apply immediately.
+- Writes need the `X-Pandora-CSRF: 1` header (the dashboard sends it) on top of SameSite cookies.
+- Admins cannot change their own role/active state (no lock-out).
 
-## API (JWT required)
-- `GET /api/v1/prs?state=open`, `GET /api/v1/prs/:id/runs`: any role
-- `GET /api/v1/users`, `PATCH /api/v1/users/:id` `{role, github_login, active}`: admin only
+## PR data and sync
+Every `pull_request` webhook refreshes the stored PR (author, state, draft, merged, requested reviewers),
+including drafts and closed PRs; only open, non-draft PRs start an AI review.
+On startup (and via **Sync now** in Admin) Pandora backfills the last `PANDORA_BACKFILL_DAYS` (default 90)
+days of PRs from every repo the GitHub App is installed on. Backfilled PRs are recorded for the dashboard but
+are **not** AI-reviewed. Sync needs the GitHub App; it is unavailable with only a personal token.
+Team review requests are not tracked yet (individual reviewers only).
 
-Not built yet: login rate limiting, password reset, refresh tokens/logout (tokens just expire).
+## API (session cookie required)
+- `GET /auth/me`, `POST /auth/logout`: any signed-in account
+- `GET /api/v1/me/prs?state=`, `GET /api/v1/me/reviews`, `GET /api/v1/prs/:id`: `user`, `admin`
+- `GET /api/v1/admin/prs?state=&repo=&author=&reviewer=&limit=&offset=`, `GET /api/v1/admin/stats`,
+  `GET /api/v1/admin/users`, `PATCH /api/v1/admin/users/:id` `{role, active}`,
+  `GET|POST /api/v1/admin/sync`: `admin`

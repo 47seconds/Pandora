@@ -44,13 +44,14 @@ func main() {
 	}
 
 	var src github.TokenSource = github.StaticToken(cfg.GitHubToken)
+	var prSource service.PRSource // only a GitHub App can list org PRs for the backfill
 	if cfg.GitHubAppID != "" {
 		app, err := github.NewAppAuth(cfg.GitHubAppID, cfg.GitHubAppKey, "")
 		if err != nil {
 			log.Error("github app", "err", err)
 			os.Exit(1)
 		}
-		src = app
+		src, prSource = app, app
 		log.Info("github auth: app", "app_id", cfg.GitHubAppID)
 	} else {
 		log.Warn("github auth: personal access token (dev fallback); use a GitHub App in production")
@@ -60,12 +61,21 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	svc := service.New(ctx, cfg, st, ghc, rv, log)
+	svc := service.New(ctx, cfg, st, ghc, rv, prSource, log)
 	if err := svc.Recover(ctx); err != nil {
 		log.Error("recover", "err", err)
 	}
+	if prSource != nil {
+		svc.StartSync() // backfill recent PRs in the background (BackfillDays)
+	}
+	if n, err := st.CountAdmins(ctx); err == nil && n == 0 && cfg.BootstrapAdmin == "" {
+		log.Warn("no admin exists: set PANDORA_BOOTSTRAP_ADMIN_GITHUB to your GitHub username, then sign in")
+	}
 
-	srv := &http.Server{Addr: cfg.Addr, Handler: handler.New(cfg, st, svc, auth.NewManager(cfg.JWTSecret, cfg.JWTTTL), log), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: cfg.Addr, Handler: handler.New(handler.Deps{
+		Config: cfg, Store: st, Svc: svc, Auth: auth.NewManager(cfg.JWTSecret, cfg.JWTTTL),
+		OAuth: github.NewOAuth(cfg.OAuthClientID, cfg.OAuthClientSecret, cfg.RedirectURL()), Log: log,
+	}), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		log.Info("pandora listening", "addr", cfg.Addr, "provider", cfg.Provider, "model", cfg.Model)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

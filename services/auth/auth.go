@@ -1,4 +1,4 @@
-// Package auth handles password hashing and JWT issuing/verification.
+// Package auth issues and verifies the session token stored in the login cookie.
 package auth
 
 import (
@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"golang.org/x/crypto/bcrypt"
 )
 
 const issuer = "pandora"
@@ -20,6 +19,8 @@ type Manager struct {
 func NewManager(secret string, ttl time.Duration) *Manager {
 	return &Manager{secret: []byte(secret), ttl: ttl}
 }
+
+func (m *Manager) TTL() time.Duration { return m.ttl }
 
 // Issue returns a signed HS256 token for the user id and its expiry.
 func (m *Manager) Issue(userID int64) (string, time.Time, error) {
@@ -51,19 +52,4 @@ func (m *Manager) Parse(token string) (int64, error) {
 		return 0, errors.New("bad subject")
 	}
 	return id, nil
-}
-
-// bcrypt silently ignores bytes past 72, so reject longer passwords instead.
-const (
-	MinPassword = 8
-	MaxPassword = 72
-)
-
-func HashPassword(p string) (string, error) {
-	b, err := bcrypt.GenerateFromPassword([]byte(p), bcrypt.DefaultCost)
-	return string(b), err
-}
-
-func CheckPassword(hash, p string) bool {
-	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(p)) == nil
 }

@@ -9,75 +9,86 @@ import (
 	"vocallabs.com/pandora/services/model"
 )
 
-var (
-	ErrEmailTaken = errors.New("email already registered")
-	ErrNotFound   = errors.New("not found")
-	ErrConflict   = errors.New("conflict")
-)
+var ErrNotFound = errors.New("not found")
 
-const userCols = `id, email, name, password_hash, role, github_login, active, created_at, last_login_at`
+const userCols = `id, github_id, github_login, name, email, avatar_url, role, active, created_at, last_login_at`
 
 func scanUser(row interface{ Scan(...any) error }) (*model.User, error) {
 	u := &model.User{}
+	var gid sql.NullInt64
 	var active int
-	if err := row.Scan(&u.ID, &u.Email, &u.Name, &u.PasswordHash, &u.Role, &u.GitHubLogin, &active, &u.CreatedAt, &u.LastLoginAt); err != nil {
+	if err := row.Scan(&u.ID, &gid, &u.GitHubLogin, &u.Name, &u.Email, &u.AvatarURL, &u.Role, &active, &u.CreatedAt, &u.LastLoginAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
-	u.Active = active == 1
+	u.GitHubID, u.Active = gid.Int64, active == 1
 	return u, nil
 }
 
-// CreateUser inserts an account. adminEmail, if non-empty, is the only address that
-// becomes admin on signup; if empty, the very first account does. Everyone else is a developer.
-func (s *Store) CreateUser(ctx context.Context, email, name, passwordHash, adminEmail string) (*model.User, error) {
+// UpsertGitHubUser records a GitHub sign-in. New accounts start as "pending".
+// A legacy account linked only by github_login adopts the GitHub id. bootstrapAdmin,
+// if it matches the login, is always an admin (so the very first admin can exist).
+func (s *Store) UpsertGitHubUser(ctx context.Context, g model.GitHubProfile, bootstrapAdmin string) (*model.User, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer tx.Rollback()
-	var n int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&n); err != nil {
-		return nil, err
+
+	// A login belongs to one account: if another account still holds it (renamed or
+	// released), clear it there so this account can take it.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE users SET github_login='' WHERE github_login=? COLLATE NOCASE AND github_id IS NOT NULL AND github_id<>?`,
+		g.Login, g.ID); err != nil {
+		return nil, false, err
 	}
-	role := model.RoleDeveloper
-	if adminEmail != "" {
-		if strings.EqualFold(email, adminEmail) {
-			role = model.RoleAdmin
+
+	var id int64
+	created := false
+	err = tx.QueryRowContext(ctx, `SELECT id FROM users WHERE github_id=?`, g.ID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = tx.QueryRowContext(ctx,
+			`SELECT id FROM users WHERE github_id IS NULL AND github_login=? COLLATE NOCASE`, g.Login).Scan(&id)
+	}
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		t := now()
+		if err := tx.QueryRowContext(ctx, `INSERT INTO users (github_id, role, created_at, updated_at) VALUES (?, ?, ?, ?) RETURNING id`,
+			g.ID, model.RolePending, t, t).Scan(&id); err != nil {
+			return nil, false, err
 		}
-	} else if n == 0 {
-		role = model.RoleAdmin
+		created = true
+	case err != nil:
+		return nil, false, err
 	}
+
 	t := now()
 	row := tx.QueryRowContext(ctx, `
-INSERT INTO users (email, name, password_hash, role, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?) RETURNING `+userCols, email, name, passwordHash, role, t, t)
+UPDATE users SET github_id=?, github_login=?, name=?, avatar_url=?,
+  email=CASE WHEN ?<>'' THEN ? ELSE email END, last_login_at=?, updated_at=?
+WHERE id=? RETURNING `+userCols, g.ID, g.Login, g.Name, g.AvatarURL, g.Email, g.Email, t, t, id)
 	u, err := scanUser(row)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed: users.email") {
-			return nil, ErrEmailTaken
-		}
-		return nil, err
+		return nil, false, err
 	}
-	return u, tx.Commit()
-}
-
-func (s *Store) GetUserByEmail(ctx context.Context, email string) (*model.User, error) {
-	return scanUser(s.db.QueryRowContext(ctx, `SELECT `+userCols+` FROM users WHERE email=?`, email))
+	if bootstrapAdmin != "" && strings.EqualFold(g.Login, bootstrapAdmin) && u.Role != model.RoleAdmin {
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET role=? WHERE id=?`, model.RoleAdmin, id); err != nil {
+			return nil, false, err
+		}
+		u.Role = model.RoleAdmin
+	}
+	return u, created, tx.Commit()
 }
 
 func (s *Store) GetUser(ctx context.Context, id int64) (*model.User, error) {
 	return scanUser(s.db.QueryRowContext(ctx, `SELECT `+userCols+` FROM users WHERE id=?`, id))
 }
 
-func (s *Store) TouchLogin(ctx context.Context, id int64) {
-	_, _ = s.db.ExecContext(ctx, `UPDATE users SET last_login_at=? WHERE id=?`, now(), id)
-}
-
 func (s *Store) ListUsers(ctx context.Context) ([]model.User, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+userCols+` FROM users ORDER BY id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+userCols+` FROM users ORDER BY
+	  CASE role WHEN 'pending' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, github_login COLLATE NOCASE`)
 	if err != nil {
 		return nil, err
 	}
@@ -93,8 +104,14 @@ func (s *Store) ListUsers(ctx context.Context) ([]model.User, error) {
 	return out, rows.Err()
 }
 
+func (s *Store) CountAdmins(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE role='admin' AND active=1`).Scan(&n)
+	return n, err
+}
+
 // UpdateUser applies admin-editable fields; nil means "leave unchanged".
-func (s *Store) UpdateUser(ctx context.Context, id int64, role, githubLogin *string, active *bool) (*model.User, error) {
+func (s *Store) UpdateUser(ctx context.Context, id int64, role *string, active *bool) (*model.User, error) {
 	u, err := s.GetUser(ctx, id)
 	if err != nil {
 		return nil, err
@@ -102,20 +119,9 @@ func (s *Store) UpdateUser(ctx context.Context, id int64, role, githubLogin *str
 	if role != nil {
 		u.Role = *role
 	}
-	if githubLogin != nil {
-		u.GitHubLogin = *githubLogin
-	}
 	if active != nil {
 		u.Active = *active
 	}
-	a := 0
-	if u.Active {
-		a = 1
-	}
-	_, err = s.db.ExecContext(ctx, `UPDATE users SET role=?, github_login=?, active=?, updated_at=? WHERE id=?`,
-		u.Role, u.GitHubLogin, a, now(), id)
-	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed: users.github_login") {
-		return nil, ErrConflict
-	}
+	_, err = s.db.ExecContext(ctx, `UPDATE users SET role=?, active=?, updated_at=? WHERE id=?`, u.Role, b2i(u.Active), now(), id)
 	return u, err
 }

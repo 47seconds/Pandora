@@ -1,4 +1,5 @@
-// Package handler exposes the HTTP surface: GitHub webhook intake and a read-only admin API.
+// Package handler exposes the HTTP surface: GitHub webhook intake, GitHub login,
+// the dashboard's JSON API and the static dashboard itself.
 package handler
 
 import (
@@ -6,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"strconv"
 
 	"github.com/gin-gonic/gin"
 
@@ -20,16 +20,26 @@ import (
 
 const maxWebhookBody = 5 << 20
 
+type Deps struct {
+	Config *config.Config
+	Store  *store.Store
+	Svc    *service.Service
+	Auth   *auth.Manager
+	OAuth  *github.OAuth
+	Log    *slog.Logger
+}
+
 type Server struct {
 	cfg   *config.Config
 	store *store.Store
 	svc   *service.Service
 	auth  *auth.Manager
+	oauth *github.OAuth
 	log   *slog.Logger
 }
 
-func New(cfg *config.Config, st *store.Store, o *service.Service, am *auth.Manager, log *slog.Logger) *gin.Engine {
-	s := &Server{cfg: cfg, store: st, svc: o, auth: am, log: log}
+func New(d Deps) *gin.Engine {
+	s := &Server{cfg: d.Config, store: d.Store, svc: d.Svc, auth: d.Auth, oauth: d.OAuth, log: d.Log}
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -37,25 +47,32 @@ func New(cfg *config.Config, st *store.Store, o *service.Service, am *auth.Manag
 	r.GET("/healthz", func(c *gin.Context) { c.JSON(200, gin.H{"ok": true}) })
 	r.POST("/webhook/github", s.webhook)
 	r.POST("/github/webhook", s.webhook) // alias: the URL configured on the GitHub App
-
 	s.mountDashboard(r)
 
-	r.POST("/auth/signup", s.signup)
-	r.POST("/auth/login", s.login)
+	r.GET("/auth/github/login", s.githubLogin)
+	r.GET("/auth/github/callback", s.githubCallback)
 
-	authed := r.Group("", s.requireAuth)
+	authed := r.Group("", s.requireAuth, s.csrf)
 	authed.GET("/auth/me", s.me)
+	authed.POST("/auth/logout", s.logout)
 
-	v1 := authed.Group("/api/v1")
-	v1.GET("/prs", s.listPRs)
-	v1.GET("/prs/:id/runs", s.listRuns)
-	admin := v1.Group("", s.requireRole(model.RoleAdmin))
+	// Approved accounts (user, admin). Pending accounts only get /auth/me.
+	member := authed.Group("/api/v1", s.requireRole(model.RoleUser, model.RoleAdmin))
+	member.GET("/me/prs", s.myPRs)
+	member.GET("/me/reviews", s.myReviews)
+	member.GET("/prs/:id", s.getPR)
+
+	admin := authed.Group("/api/v1/admin", s.requireRole(model.RoleAdmin))
+	admin.GET("/prs", s.adminPRs)
+	admin.GET("/stats", s.adminStats)
 	admin.GET("/users", s.listUsers)
 	admin.PATCH("/users/:id", s.updateUser)
+	admin.GET("/sync", s.syncStatus)
+	admin.POST("/sync", s.startSync)
 	return r
 }
 
-// webhook accepts events straight from a GitHub webhook, or forwarded by a
+// webhook accepts events straight from the GitHub App's webhook, or forwarded by a
 // workflow that signs the payload with the same shared secret.
 func (s *Server) webhook(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxWebhookBody)
@@ -93,30 +110,6 @@ func (s *Server) webhook(c *gin.Context) {
 	}
 }
 
-func (s *Server) listPRs(c *gin.Context) {
-	limit, _ := strconv.Atoi(c.Query("limit"))
-	prs, err := s.store.ListPRs(c.Request.Context(), c.Query("state"), limit)
-	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(200, prs)
-}
-
-func (s *Server) listRuns(c *gin.Context) {
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil {
-		c.JSON(400, gin.H{"error": "bad id"})
-		return
-	}
-	runs, err := s.store.ListRuns(c.Request.Context(), id)
-	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(200, runs)
-}
-
 // mountDashboard serves the static dashboard build at /dashboard/. Drop any built
 // frontend into the static dir (it needs an index.html); no Go changes required.
 func (s *Server) mountDashboard(r *gin.Engine) {
@@ -130,7 +123,7 @@ func (s *Server) mountDashboard(r *gin.Engine) {
 	}
 	r.GET("/", func(c *gin.Context) { c.Redirect(http.StatusFound, "/dashboard/") })
 	dash := r.Group("/dashboard", func(c *gin.Context) {
-		c.Header("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
+		c.Header("Content-Security-Policy", "default-src 'self'; img-src 'self' https://avatars.githubusercontent.com; frame-ancestors 'none'")
 		c.Header("X-Content-Type-Options", "nosniff")
 		c.Header("Referrer-Policy", "no-referrer")
 	})

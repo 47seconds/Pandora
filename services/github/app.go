@@ -149,3 +149,105 @@ func (a *AppAuth) Token(ctx context.Context, repo string) (string, error) {
 	a.mu.Unlock()
 	return tok.Token, nil
 }
+
+func (a *AppAuth) installationToken(ctx context.Context, id int64) (string, error) {
+	var tok struct {
+		Token string `json:"token"`
+	}
+	if err := a.call(ctx, "POST", fmt.Sprintf("/app/installations/%d/access_tokens", id), map[string]any{}, &tok); err != nil {
+		return "", err
+	}
+	return tok.Token, nil
+}
+
+// getWith performs a GET using an installation token (not the app JWT).
+func (a *AppAuth) getWith(ctx context.Context, token, path string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, "GET", a.base+path, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", jsonAccept)
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	resp, err := a.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("github GET %s: %s", path, resp.Status)
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// ListRecentPRs walks every installation and repo the app can see and calls fn for each
+// PR updated at or after since. Per-repo failures do not stop the walk; they are returned together.
+func (a *AppAuth) ListRecentPRs(ctx context.Context, since time.Time, fn func(repo string, p PRPayload) error) error {
+	var errs []error
+	for page := 1; ; page++ {
+		var insts []struct {
+			ID int64 `json:"id"`
+		}
+		if err := a.call(ctx, "GET", fmt.Sprintf("/app/installations?per_page=100&page=%d", page), nil, &insts); err != nil {
+			return err
+		}
+		for _, in := range insts {
+			tok, err := a.installationToken(ctx, in.ID)
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			if err := a.walkInstallation(ctx, tok, since, fn); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		if len(insts) < 100 {
+			break
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (a *AppAuth) walkInstallation(ctx context.Context, token string, since time.Time, fn func(string, PRPayload) error) error {
+	var errs []error
+	for page := 1; ; page++ {
+		var repos struct {
+			Repositories []struct {
+				FullName string `json:"full_name"`
+			} `json:"repositories"`
+		}
+		if err := a.getWith(ctx, token, fmt.Sprintf("/installation/repositories?per_page=100&page=%d", page), &repos); err != nil {
+			return errors.Join(append(errs, err)...)
+		}
+		for _, r := range repos.Repositories {
+			if err := a.walkRepo(ctx, token, r.FullName, since, fn); err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", r.FullName, err))
+			}
+		}
+		if len(repos.Repositories) < 100 {
+			break
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (a *AppAuth) walkRepo(ctx context.Context, token, repo string, since time.Time, fn func(string, PRPayload) error) error {
+	for page := 1; ; page++ {
+		var prs []PRPayload
+		if err := a.getWith(ctx, token,
+			fmt.Sprintf("/repos/%s/pulls?state=all&sort=updated&direction=desc&per_page=100&page=%d", repo, page), &prs); err != nil {
+			return err
+		}
+		for _, p := range prs {
+			if t, err := time.Parse(time.RFC3339, p.UpdatedAt); err == nil && t.Before(since) {
+				return nil // sorted newest-first: everything after this is older
+			}
+			if err := fn(repo, p); err != nil {
+				return err
+			}
+		}
+		if len(prs) < 100 {
+			return nil
+		}
+	}
+}

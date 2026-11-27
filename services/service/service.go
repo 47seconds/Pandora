@@ -25,7 +25,11 @@ type Service struct {
 	store    *store.Store
 	gh       *github.Client
 	reviewer review.Reviewer
+	source   PRSource // nil unless a GitHub App is configured (needed for backfill)
 	log      *slog.Logger
+
+	syncMu sync.Mutex
+	sync   SyncStatus
 
 	baseCtx context.Context
 	wg      sync.WaitGroup
@@ -33,8 +37,8 @@ type Service struct {
 	cancels map[int64]context.CancelFunc
 }
 
-func New(ctx context.Context, cfg *config.Config, st *store.Store, gh *github.Client, rv review.Reviewer, log *slog.Logger) *Service {
-	return &Service{cfg: cfg, store: st, gh: gh, reviewer: rv, log: log, baseCtx: ctx, cancels: map[int64]context.CancelFunc{}}
+func New(ctx context.Context, cfg *config.Config, st *store.Store, gh *github.Client, rv review.Reviewer, src PRSource, log *slog.Logger) *Service {
+	return &Service{cfg: cfg, store: st, gh: gh, reviewer: rv, source: src, log: log, baseCtx: ctx, cancels: map[int64]context.CancelFunc{}}
 }
 
 // Wait blocks until in-flight reviews finish (used on shutdown).
@@ -46,7 +50,8 @@ type Outcome struct {
 	Reason string `json:"reason,omitempty"`
 }
 
-// HandlePullRequest reacts to a pull_request event.
+// HandlePullRequest reacts to a pull_request event. Every event refreshes the stored PR
+// (author, reviewers, state, ...); only some of them start an AI review.
 func (o *Service) HandlePullRequest(ctx context.Context, ev github.PREvent) (Outcome, error) {
 	repo, n := ev.Repository.FullName, ev.Number
 	if repo == "" || n == 0 {
@@ -56,28 +61,28 @@ func (o *Service) HandlePullRequest(ctx context.Context, ev github.PREvent) (Out
 		return Outcome{Action: "ignored", Reason: "repo not allowed"}, nil
 	}
 
+	pr := ev.PullRequest
+	if ev.Action == "closed" {
+		pr.State = "closed"
+	}
+	prID, err := o.saveGitHubPR(ctx, repo, n, pr)
+	if err != nil {
+		return Outcome{}, err
+	}
+
 	switch ev.Action {
 	case "closed":
-		prID, err := o.store.ClosePR(ctx, repo, n)
-		if err != nil {
-			return Outcome{}, err
-		}
-		if prID != 0 {
-			o.supersede(ctx, prID, 0)
-		}
+		o.supersede(ctx, prID, 0)
 		return Outcome{Action: "closed"}, nil
 	case "opened", "reopened", "synchronize", "ready_for_review", "edited":
 	default:
-		return Outcome{Action: "ignored", Reason: "action " + ev.Action}, nil
+		return Outcome{Action: "tracked", Reason: "action " + ev.Action}, nil
 	}
-
-	pr := ev.PullRequest
 	if pr.Draft {
-		return Outcome{Action: "ignored", Reason: "draft"}, nil
+		return Outcome{Action: "tracked", Reason: "draft"}, nil
 	}
-	prID, err := o.store.UpsertPR(ctx, model.PR{Repo: repo, Number: n, Title: pr.Title, Author: pr.User.Login, HeadSHA: pr.Head.SHA})
-	if err != nil {
-		return Outcome{}, err
+	if pr.State == "closed" {
+		return Outcome{Action: "tracked", Reason: "closed"}, nil
 	}
 	runID, created, err := o.store.CreateRun(ctx, prID, pr.Head.SHA, descHash(pr.Title, pr.Body))
 	if err != nil {
@@ -91,6 +96,23 @@ func (o *Service) HandlePullRequest(ctx context.Context, ev github.PREvent) (Out
 	o.store.AddEvent(ctx, runID, "run_created", fmt.Sprintf("action=%s sha=%s", ev.Action, pr.Head.SHA))
 	o.start(runID)
 	return Outcome{Action: "started", RunID: runID}, nil
+}
+
+// saveGitHubPR stores PR metadata and its requested reviewers. No review is started.
+func (o *Service) saveGitHubPR(ctx context.Context, repo string, n int, p github.PRPayload) (int64, error) {
+	state := p.State
+	if state == "" {
+		state = "open"
+	}
+	id, err := o.store.UpsertPR(ctx, model.PR{
+		Repo: repo, Number: n, Title: p.Title, Author: p.User.Login, State: state, HeadSHA: p.Head.SHA,
+		BaseRef: p.Base.Ref, Draft: p.Draft, Merged: p.Merged || p.MergedAt != "",
+		GHCreatedAt: p.CreatedAt, GHUpdatedAt: p.UpdatedAt, ClosedAt: p.ClosedAt, MergedAt: p.MergedAt,
+	})
+	if err != nil {
+		return 0, err
+	}
+	return id, o.store.SetReviewers(ctx, id, p.ReviewerLogins())
 }
 
 // Recover restarts runs interrupted by a service restart.
@@ -241,4 +263,68 @@ func trim(s string) string {
 		s = s[1:]
 	}
 	return s
+}
+
+// PRSource lists recent PRs across everything the GitHub App can see.
+type PRSource interface {
+	ListRecentPRs(ctx context.Context, since time.Time, fn func(repo string, p github.PRPayload) error) error
+}
+
+type SyncStatus struct {
+	Enabled    bool   `json:"enabled"`
+	Running    bool   `json:"running"`
+	Days       int    `json:"days"`
+	StartedAt  string `json:"started_at"`
+	FinishedAt string `json:"finished_at"`
+	PRs        int    `json:"prs"`
+	Error      string `json:"error"`
+}
+
+func (o *Service) SyncStatus() SyncStatus {
+	o.syncMu.Lock()
+	defer o.syncMu.Unlock()
+	st := o.sync
+	st.Enabled, st.Days = o.source != nil, o.cfg.BackfillDays
+	return st
+}
+
+// StartSync begins a background backfill of the last BackfillDays days of PRs.
+// It returns false if no GitHub App is configured or a sync is already running.
+// Backfilled PRs are only recorded; they do not trigger AI reviews.
+func (o *Service) StartSync() bool {
+	o.syncMu.Lock()
+	if o.source == nil || o.sync.Running {
+		o.syncMu.Unlock()
+		return false
+	}
+	o.sync = SyncStatus{Running: true, StartedAt: time.Now().UTC().Format(time.RFC3339)}
+	o.syncMu.Unlock()
+
+	o.wg.Add(1)
+	go func() {
+		defer o.wg.Done()
+		since := time.Now().AddDate(0, 0, -o.cfg.BackfillDays)
+		count := 0
+		err := o.source.ListRecentPRs(o.baseCtx, since, func(repo string, p github.PRPayload) error {
+			if !o.cfg.RepoAllowed(repo) {
+				return nil
+			}
+			if _, err := o.saveGitHubPR(o.baseCtx, repo, p.Number, p); err != nil {
+				return err
+			}
+			count++
+			return nil
+		})
+		o.syncMu.Lock()
+		o.sync.Running, o.sync.PRs = false, count
+		o.sync.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+		if err != nil {
+			o.sync.Error = err.Error()
+			o.log.Error("sync finished with errors", "prs", count, "err", err)
+		} else {
+			o.log.Info("sync finished", "prs", count, "days", o.cfg.BackfillDays)
+		}
+		o.syncMu.Unlock()
+	}()
+	return true
 }

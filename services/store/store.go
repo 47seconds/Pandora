@@ -36,20 +36,6 @@ func (s *Store) Close() error { return s.db.Close() }
 
 func now() string { return time.Now().UTC().Format(time.RFC3339) }
 
-// UpsertPR creates or refreshes a PR row and returns its id.
-func (s *Store) UpsertPR(ctx context.Context, p model.PR) (int64, error) {
-	t := now()
-	var id int64
-	err := s.db.QueryRowContext(ctx, `
-INSERT INTO prs (repo, number, title, author, state, head_sha, created_at, updated_at)
-VALUES (?, ?, ?, ?, 'open', ?, ?, ?)
-ON CONFLICT (repo, number) DO UPDATE SET
-  title=excluded.title, author=excluded.author, state='open',
-  head_sha=excluded.head_sha, updated_at=excluded.updated_at
-RETURNING id`, p.Repo, p.Number, p.Title, p.Author, p.HeadSHA, t, t).Scan(&id)
-	return id, err
-}
-
 // CreateRun registers a run for (pr, sha, descHash). It is idempotent: duplicate
 // webhook deliveries return created=false. A run that was superseded or errored is
 // revived (e.g. PR reopened) and reported as created=true.
@@ -108,18 +94,6 @@ func (s *Store) SupersedeOthers(ctx context.Context, prID, keepID int64) ([]int6
 		return nil, err
 	}
 	return ids, tx.Commit()
-}
-
-// ClosePR marks the PR closed. Returns its id, or 0 if unknown.
-func (s *Store) ClosePR(ctx context.Context, repo string, number int) (int64, error) {
-	var id int64
-	err := s.db.QueryRowContext(ctx,
-		`UPDATE prs SET state='closed', updated_at=? WHERE repo=? AND number=? RETURNING id`,
-		now(), repo, number).Scan(&id)
-	if err == sql.ErrNoRows {
-		return 0, nil
-	}
-	return id, err
 }
 
 // StartReview moves queued -> ai_review. False means the run is no longer eligible.
@@ -195,40 +169,6 @@ func (s *Store) PendingRunIDs(ctx context.Context) ([]int64, error) {
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
-}
-
-// ListPRs returns PRs (newest first) with their latest run. state "" = all.
-func (s *Store) ListPRs(ctx context.Context, state string, limit int) ([]model.PRWithRun, error) {
-	if limit <= 0 || limit > 200 {
-		limit = 50
-	}
-	rows, err := s.db.QueryContext(ctx, `
-SELECT p.id, p.repo, p.number, p.title, p.author, p.state, p.head_sha, p.created_at, p.updated_at,
-       r.id, r.pr_id, r.sha, r.desc_hash, r.status, r.verdict, r.report, r.error, r.created_at, r.updated_at
-FROM prs p
-LEFT JOIN runs r ON r.id = (SELECT MAX(id) FROM runs WHERE pr_id = p.id)
-WHERE (? = '' OR p.state = ?)
-ORDER BY p.updated_at DESC LIMIT ?`, state, state, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []model.PRWithRun{}
-	for rows.Next() {
-		var x model.PRWithRun
-		var rid, rprid sql.NullInt64
-		var rsha, rdh, rst, rv, rrep, rerr, rc, ru sql.NullString
-		if err := rows.Scan(&x.ID, &x.Repo, &x.Number, &x.Title, &x.Author, &x.State, &x.HeadSHA, &x.CreatedAt, &x.UpdatedAt,
-			&rid, &rprid, &rsha, &rdh, &rst, &rv, &rrep, &rerr, &rc, &ru); err != nil {
-			return nil, err
-		}
-		if rid.Valid {
-			x.LatestRun = &model.Run{ID: rid.Int64, PRID: rprid.Int64, SHA: rsha.String, DescHash: rdh.String, Status: rst.String,
-				Verdict: rv.String, Report: rrep.String, Error: rerr.String, CreatedAt: rc.String, UpdatedAt: ru.String}
-		}
-		out = append(out, x)
-	}
-	return out, rows.Err()
 }
 
 // ListRuns returns all runs of a PR, newest first.

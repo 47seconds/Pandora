@@ -30,23 +30,47 @@ func VerifySignature(secret string, body []byte, header string) bool {
 	return hmac.Equal(got, mac.Sum(nil))
 }
 
-// PREvent is the subset of the pull_request webhook payload Pandora needs.
+// PRPayload is a pull request as GitHub sends it, in webhook events and in list calls.
+type PRPayload struct {
+	Number    int    `json:"number"`
+	Title     string `json:"title"`
+	Body      string `json:"body"`
+	Draft     bool   `json:"draft"`
+	State     string `json:"state"`
+	Merged    bool   `json:"merged"` // absent in list responses; use MergedAt there
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+	ClosedAt  string `json:"closed_at"`
+	MergedAt  string `json:"merged_at"`
+	User      struct {
+		Login string `json:"login"`
+	} `json:"user"`
+	Head struct {
+		SHA string `json:"sha"`
+	} `json:"head"`
+	Base struct {
+		Ref string `json:"ref"`
+	} `json:"base"`
+	RequestedReviewers []struct {
+		Login string `json:"login"`
+	} `json:"requested_reviewers"`
+}
+
+// ReviewerLogins lists the individually requested reviewers (teams are not included).
+func (p PRPayload) ReviewerLogins() []string {
+	out := make([]string, 0, len(p.RequestedReviewers))
+	for _, r := range p.RequestedReviewers {
+		out = append(out, r.Login)
+	}
+	return out
+}
+
+// PREvent is the pull_request webhook payload.
 type PREvent struct {
-	Action      string `json:"action"`
-	Number      int    `json:"number"`
-	PullRequest struct {
-		Title string `json:"title"`
-		Body  string `json:"body"`
-		Draft bool   `json:"draft"`
-		State string `json:"state"`
-		User  struct {
-			Login string `json:"login"`
-		} `json:"user"`
-		Head struct {
-			SHA string `json:"sha"`
-		} `json:"head"`
-	} `json:"pull_request"`
-	Repository struct {
+	Action      string    `json:"action"`
+	Number      int       `json:"number"`
+	PullRequest PRPayload `json:"pull_request"`
+	Repository  struct {
 		FullName string `json:"full_name"`
 	} `json:"repository"`
 }

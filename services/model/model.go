@@ -14,15 +14,23 @@ const (
 )
 
 type PR struct {
-	ID        int64  `json:"id"`
-	Repo      string `json:"repo"`
-	Number    int    `json:"number"`
-	Title     string `json:"title"`
-	Author    string `json:"author"`
-	State     string `json:"state"` // open | closed
-	HeadSHA   string `json:"head_sha"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	ID          int64    `json:"id"`
+	Repo        string   `json:"repo"`
+	Number      int      `json:"number"`
+	Title       string   `json:"title"`
+	Author      string   `json:"author"` // GitHub login
+	State       string   `json:"state"`  // open | closed
+	HeadSHA     string   `json:"head_sha"`
+	BaseRef     string   `json:"base_ref"`
+	Draft       bool     `json:"draft"`
+	Merged      bool     `json:"merged"`
+	GHCreatedAt string   `json:"gh_created_at"`
+	GHUpdatedAt string   `json:"gh_updated_at"`
+	ClosedAt    string   `json:"closed_at"`
+	MergedAt    string   `json:"merged_at"`
+	CreatedAt   string   `json:"created_at"` // when Pandora first saw it
+	UpdatedAt   string   `json:"updated_at"`
+	Reviewers   []string `json:"reviewers"` // requested reviewers (GitHub logins)
 }
 
 type Run struct {
@@ -43,25 +51,59 @@ type PRWithRun struct {
 	LatestRun *Run `json:"latest_run,omitempty"`
 }
 
-// Roles.
+// Roles: new accounts are pending until an admin approves them.
 const (
-	RoleAdmin     = "admin"
-	RoleReviewer  = "reviewer"
-	RoleDeveloper = "developer"
+	RolePending = "pending"
+	RoleUser    = "user"
+	RoleAdmin   = "admin"
 )
 
+func ValidRole(r string) bool { return r == RolePending || r == RoleUser || r == RoleAdmin }
+
 type User struct {
-	ID           int64  `json:"id"`
-	Email        string `json:"email"`
-	Name         string `json:"name"`
-	PasswordHash string `json:"-"`
-	Role         string `json:"role"`
-	GitHubLogin  string `json:"github_login"`
-	Active       bool   `json:"active"`
-	CreatedAt    string `json:"created_at"`
-	LastLoginAt  string `json:"last_login_at"`
+	ID          int64  `json:"id"`
+	GitHubID    int64  `json:"github_id"`
+	GitHubLogin string `json:"github_login"`
+	Name        string `json:"name"`
+	Email       string `json:"email"`
+	AvatarURL   string `json:"avatar_url"`
+	Role        string `json:"role"`
+	Active      bool   `json:"active"`
+	CreatedAt   string `json:"created_at"`
+	LastLoginAt string `json:"last_login_at"`
 }
 
-func ValidRole(r string) bool {
-	return r == RoleAdmin || r == RoleReviewer || r == RoleDeveloper
+// GitHubProfile is what GitHub tells us about a user at sign-in.
+type GitHubProfile struct {
+	ID        int64
+	Login     string
+	Name      string
+	Email     string
+	AvatarURL string
+}
+
+// Stats feeds the admin overview.
+type Stats struct {
+	Open            int            `json:"open"`
+	Closed          int            `json:"closed"` // closed without merging
+	Merged          int            `json:"merged"`
+	Drafts          int            `json:"drafts"` // open drafts
+	ByAIStatus      map[string]int `json:"by_ai_status"`
+	TopAuthors      []Count        `json:"top_authors"`
+	AwaitingReview  []Count        `json:"awaiting_review"` // open PRs waiting on each reviewer
+	ByRepo          []Count        `json:"by_repo"`
+	Weekly          []WeekCount    `json:"weekly"`
+	AvgHoursToMerge float64        `json:"avg_hours_to_merge"`
+}
+
+type Count struct {
+	Name  string `json:"name"`
+	Open  int    `json:"open"`
+	Total int    `json:"total"`
+}
+
+type WeekCount struct {
+	Week   string `json:"week"` // Monday, YYYY-MM-DD
+	Opened int    `json:"opened"`
+	Merged int    `json:"merged"`
 }
