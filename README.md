@@ -55,7 +55,8 @@ Open `/dashboard/` (`/` redirects there) and **Continue with GitHub**. Static fi
 |---|---|
 | `pending` (every new account) | Settings only, with an "awaiting approval" notice |
 | `user` | **My pull requests** (author = your GitHub login), **Review pull requests** (you are a requested reviewer), **Settings** |
-| `admin` | all of the above plus **Admin**: overview analytics, all PRs (filter by state/repo/author/reviewer), Users (approve, promote, deactivate), manual sync |
+| `admin` | all of the above plus **Admin**: overview analytics, all PRs (filter by state/repo/author/reviewer), Users (approve pending, promote user to admin), manual sync |
+| `superadmin` | everything an admin can do, plus demote or deactivate admins and delete accounts. Exactly one exists (the owner) |
 
 Settings shows your GitHub username, name, email, avatar and role (read-only, refreshed from GitHub at each
 sign-in) and a Light / Dark / System theme switch (remembered in the browser).
@@ -103,8 +104,24 @@ Tables: `prs`, `runs`, `events`, `users`, `schema_migrations`.
 GitHub is the only way in (no passwords). `GET /auth/github/login` -> GitHub -> `/auth/github/callback`, which
 signs a session JWT into an **HttpOnly, SameSite=Lax, Secure** cookie (`PANDORA_JWT_TTL_HOURS`, default 24).
 - Anyone with a GitHub account can sign in, but a new account is `pending` until an admin approves it.
-- `PANDORA_BOOTSTRAP_ADMIN_GITHUB` (a GitHub username) is always an admin, so the first admin can exist.
-  It is re-applied at every sign-in, so that account cannot be demoted while the setting is present.
+- **Super-admin** = the primary owner, exactly one (enforced by the database). It is the account whose GitHub
+  username is `PANDORA_BOOTSTRAP_ADMIN_GITHUB`; if that is unset, it is the **first person ever to sign in**
+  (so set the variable on any instance reachable by others). Setting it later moves ownership: the previous
+  super-admin becomes a plain admin. It cannot be assigned, changed, deactivated or deleted through the app.
+- Who can do what to an account:
+
+  | Action | admin | super-admin |
+  |---|---|---|
+  | Approve `pending` -> `user` | yes | yes |
+  | Promote `user` -> `admin` | yes | yes |
+  | Demote an admin, or send anyone back to `pending` | **no** | yes |
+  | Deactivate / reactivate an account | **no** | yes |
+  | Delete an account | **no** | yes |
+
+  Nobody can change their own account. The API computes these permissions per account (`perms` in
+  `GET /api/v1/admin/users`) and the dashboard shows only the buttons that are allowed.
+- **Deleting** an account removes the login and ends its session at once. Their PRs stay. If the person signs in with
+  GitHub again they start over as `pending`; to keep someone out, **deactivate** them instead.
 - Accounts are keyed by GitHub's numeric id; a renamed GitHub username follows the same account.
 - The user is re-read from the DB on every request: deactivation and role changes apply immediately.
 - Writes need the `X-Pandora-CSRF: 1` header (the dashboard sends it) on top of SameSite cookies.
@@ -122,5 +139,6 @@ Team review requests are not tracked yet (individual reviewers only).
 - `GET /auth/me`, `POST /auth/logout`: any signed-in account
 - `GET /api/v1/me/prs?state=`, `GET /api/v1/me/reviews`, `GET /api/v1/prs/:id`: `user`, `admin`
 - `GET /api/v1/admin/prs?state=&repo=&author=&reviewer=&limit=&offset=`, `GET /api/v1/admin/stats`,
-  `GET /api/v1/admin/users`, `PATCH /api/v1/admin/users/:id` `{role, active}`,
+  `GET /api/v1/admin/users`, `PATCH /api/v1/admin/users/:id` `{role, active}` (admin: approve/promote only),
+  `DELETE /api/v1/admin/users/:id` (super-admin only),
   `GET|POST /api/v1/admin/sync`: `admin`

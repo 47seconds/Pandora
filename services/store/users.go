@@ -28,8 +28,11 @@ func scanUser(row interface{ Scan(...any) error }) (*model.User, error) {
 }
 
 // UpsertGitHubUser records a GitHub sign-in. New accounts start as "pending".
-// A legacy account linked only by github_login adopts the GitHub id. bootstrapAdmin,
-// if it matches the login, is always an admin (so the very first admin can exist).
+// A legacy account linked only by github_login adopts the GitHub id.
+//
+// The superadmin is: the bootstrapAdmin login when one is configured (always, and any
+// previous superadmin becomes a plain admin so there is only ever one); otherwise the
+// very first account ever created.
 func (s *Store) UpsertGitHubUser(ctx context.Context, g model.GitHubProfile, bootstrapAdmin string) (*model.User, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -54,9 +57,17 @@ func (s *Store) UpsertGitHubUser(ctx context.Context, g model.GitHubProfile, boo
 	}
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
+		var existing int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&existing); err != nil {
+			return nil, false, err
+		}
+		role := model.RolePending
+		if bootstrapAdmin == "" && existing == 0 {
+			role = model.RoleSuperAdmin // nobody configured: the first sign-in is the owner
+		}
 		t := now()
 		if err := tx.QueryRowContext(ctx, `INSERT INTO users (github_id, role, created_at, updated_at) VALUES (?, ?, ?, ?) RETURNING id`,
-			g.ID, model.RolePending, t, t).Scan(&id); err != nil {
+			g.ID, role, t, t).Scan(&id); err != nil {
 			return nil, false, err
 		}
 		created = true
@@ -73,11 +84,15 @@ WHERE id=? RETURNING `+userCols, g.ID, g.Login, g.Name, g.AvatarURL, g.Email, g.
 	if err != nil {
 		return nil, false, err
 	}
-	if bootstrapAdmin != "" && strings.EqualFold(g.Login, bootstrapAdmin) && u.Role != model.RoleAdmin {
-		if _, err := tx.ExecContext(ctx, `UPDATE users SET role=? WHERE id=?`, model.RoleAdmin, id); err != nil {
+	if bootstrapAdmin != "" && strings.EqualFold(g.Login, bootstrapAdmin) && u.Role != model.RoleSuperAdmin {
+		// demote any previous superadmin first: the unique index allows only one
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET role=? WHERE role=? AND id<>?`, model.RoleAdmin, model.RoleSuperAdmin, id); err != nil {
 			return nil, false, err
 		}
-		u.Role = model.RoleAdmin
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET role=?, active=1 WHERE id=?`, model.RoleSuperAdmin, id); err != nil {
+			return nil, false, err
+		}
+		u.Role, u.Active = model.RoleSuperAdmin, true
 	}
 	return u, created, tx.Commit()
 }
@@ -88,7 +103,7 @@ func (s *Store) GetUser(ctx context.Context, id int64) (*model.User, error) {
 
 func (s *Store) ListUsers(ctx context.Context) ([]model.User, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+userCols+` FROM users ORDER BY
-	  CASE role WHEN 'pending' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, github_login COLLATE NOCASE`)
+	  CASE role WHEN 'pending' THEN 0 WHEN 'superadmin' THEN 1 WHEN 'admin' THEN 2 ELSE 3 END, github_login COLLATE NOCASE`)
 	if err != nil {
 		return nil, err
 	}
@@ -104,10 +119,23 @@ func (s *Store) ListUsers(ctx context.Context) ([]model.User, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) CountAdmins(ctx context.Context) (int, error) {
+func (s *Store) CountSuperAdmins(ctx context.Context) (int, error) {
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE role='admin' AND active=1`).Scan(&n)
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE role='superadmin'`).Scan(&n)
 	return n, err
+}
+
+// DeleteUser removes an account (their sessions stop working immediately). The person's
+// PRs are untouched, and if they sign in with GitHub again they start over as pending.
+func (s *Store) DeleteUser(ctx context.Context, id int64) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM users WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // UpdateUser applies admin-editable fields; nil means "leave unchanged".

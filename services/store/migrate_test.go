@@ -28,7 +28,7 @@ func TestMigrateIdempotent(t *testing.T) {
 			t.Fatal(err)
 		}
 		var n int
-		if err := st.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil || n != 3 {
+		if err := st.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil || n != 4 {
 			t.Fatalf("run %d: migrations=%d err=%v", i, n, err)
 		}
 		st.Close()
@@ -87,31 +87,72 @@ func TestMigrationFromLegacyUsers(t *testing.T) {
 func TestUpsertGitHubUser(t *testing.T) {
 	st := open(t)
 	ctx := context.Background()
+	const boss = "boss"
 
-	u, created, err := st.UpsertGitHubUser(ctx, model.GitHubProfile{ID: 1, Login: "alice", Name: "Alice", Email: "a@x.com"}, "")
+	// first account with a bootstrap admin configured: pending, not owner
+	u, created, err := st.UpsertGitHubUser(ctx, model.GitHubProfile{ID: 1, Login: "alice", Name: "Alice", Email: "a@x.com"}, boss)
 	if err != nil || !created || u.Role != "pending" {
 		t.Fatalf("new: %+v %v %v", u, created, err)
 	}
 	// renamed on GitHub: same account, new login; empty email keeps the old one
-	u2, created, _ := st.UpsertGitHubUser(ctx, model.GitHubProfile{ID: 1, Login: "alice2", Name: "Alice", Email: ""}, "")
+	u2, created, _ := st.UpsertGitHubUser(ctx, model.GitHubProfile{ID: 1, Login: "alice2", Name: "Alice", Email: ""}, boss)
 	if created || u2.ID != u.ID || u2.GitHubLogin != "alice2" || u2.Email != "a@x.com" {
 		t.Fatalf("rename: %+v", u2)
 	}
 	// someone else takes the old name: allowed, and does not break alice
-	b, _, err := st.UpsertGitHubUser(ctx, model.GitHubProfile{ID: 2, Login: "ALICE2", Name: "Other"}, "")
+	b, _, err := st.UpsertGitHubUser(ctx, model.GitHubProfile{ID: 2, Login: "ALICE2", Name: "Other"}, boss)
 	if err != nil || b.ID == u.ID || b.GitHubLogin != "ALICE2" {
 		t.Fatalf("login reuse: %+v %v", b, err)
 	}
 	if again, _ := st.GetUser(ctx, u.ID); again.GitHubLogin != "" || again.Role != "pending" {
 		t.Fatalf("stale holder should lose the login only: %+v", again)
 	}
-	// bootstrap admin is promoted on login, case-insensitively
-	boss, _, _ := st.UpsertGitHubUser(ctx, model.GitHubProfile{ID: 3, Login: "Boss"}, "boss")
-	if boss.Role != "admin" {
-		t.Fatalf("bootstrap: %+v", boss)
+	// the configured bootstrap login becomes superadmin, case-insensitively
+	owner, _, _ := st.UpsertGitHubUser(ctx, model.GitHubProfile{ID: 3, Login: "Boss"}, boss)
+	if owner.Role != "superadmin" {
+		t.Fatalf("bootstrap: %+v", owner)
 	}
-	if n, _ := st.CountAdmins(ctx); n != 1 {
-		t.Fatalf("admins: %d", n)
+	if n, _ := st.CountSuperAdmins(ctx); n != 1 {
+		t.Fatalf("superadmins: %d", n)
+	}
+}
+
+func TestSuperAdminRules(t *testing.T) {
+	ctx := context.Background()
+
+	// nothing configured: the very first account is the owner, later ones are pending
+	st := open(t)
+	first, _, _ := st.UpsertGitHubUser(ctx, model.GitHubProfile{ID: 1, Login: "first"}, "")
+	second, _, _ := st.UpsertGitHubUser(ctx, model.GitHubProfile{ID: 2, Login: "second"}, "")
+	if first.Role != "superadmin" || second.Role != "pending" {
+		t.Fatalf("first=%s second=%s", first.Role, second.Role)
+	}
+	// the owner is re-affirmed on every sign-in
+	if again, _, _ := st.UpsertGitHubUser(ctx, model.GitHubProfile{ID: 1, Login: "first"}, ""); again.Role != "superadmin" {
+		t.Fatal("owner lost the role")
+	}
+
+	// configuring a bootstrap login later moves ownership: still exactly one superadmin
+	newOwner, _, err := st.UpsertGitHubUser(ctx, model.GitHubProfile{ID: 2, Login: "second"}, "second")
+	if err != nil || newOwner.Role != "superadmin" {
+		t.Fatalf("new owner: %+v %v", newOwner, err)
+	}
+	if old, _ := st.GetUser(ctx, first.ID); old.Role != "admin" {
+		t.Fatalf("previous owner becomes a plain admin, got %s", old.Role)
+	}
+	if n, _ := st.CountSuperAdmins(ctx); n != 1 {
+		t.Fatalf("superadmins: %d", n)
+	}
+	// the database itself refuses a second superadmin
+	if _, err := st.db.Exec(`UPDATE users SET role='superadmin' WHERE id=?`, first.ID); err == nil {
+		t.Fatal("unique index must allow only one superadmin")
+	}
+	// delete
+	if err := st.DeleteUser(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DeleteUser(ctx, first.ID); err != ErrNotFound {
+		t.Fatalf("second delete: %v", err)
 	}
 }
 

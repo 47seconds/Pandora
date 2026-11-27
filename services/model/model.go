@@ -51,14 +51,21 @@ type PRWithRun struct {
 	LatestRun *Run `json:"latest_run,omitempty"`
 }
 
-// Roles: new accounts are pending until an admin approves them.
+// Roles: new accounts are pending until an admin approves them. The superadmin is the
+// single primary owner (the PANDORA_BOOTSTRAP_ADMIN_GITHUB account, or the first ever
+// sign-in when that is unset); it can never be assigned through the API.
 const (
-	RolePending = "pending"
-	RoleUser    = "user"
-	RoleAdmin   = "admin"
+	RolePending    = "pending"
+	RoleUser       = "user"
+	RoleAdmin      = "admin"
+	RoleSuperAdmin = "superadmin"
 )
 
-func ValidRole(r string) bool { return r == RolePending || r == RoleUser || r == RoleAdmin }
+// AssignableRole reports whether an admin may set this role on someone.
+func AssignableRole(r string) bool { return r == RolePending || r == RoleUser || r == RoleAdmin }
+
+// IsAdmin is true for admins and the superadmin.
+func IsAdmin(role string) bool { return role == RoleAdmin || role == RoleSuperAdmin }
 
 type User struct {
 	ID          int64  `json:"id"`

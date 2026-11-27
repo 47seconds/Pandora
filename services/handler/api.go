@@ -45,7 +45,7 @@ func (s *Server) myReviews(c *gin.Context) {
 }
 
 func canView(u *model.User, p *model.PRWithRun) bool {
-	if u.Role == model.RoleAdmin {
+	if model.IsAdmin(u.Role) {
 		return true
 	}
 	if u.GitHubLogin == "" {
@@ -108,21 +108,63 @@ func (s *Server) adminStats(c *gin.Context) {
 	c.JSON(200, st)
 }
 
+type userView struct {
+	model.User
+	Perms Perms `json:"perms"` // what the signed-in admin may do to this account
+}
+
 func (s *Server) listUsers(c *gin.Context) {
 	us, err := s.store.ListUsers(c.Request.Context())
 	if err != nil {
 		serverError(c)
 		return
 	}
-	c.JSON(200, us)
+	actor := current(c)
+	out := make([]userView, len(us))
+	for i := range us {
+		out[i] = userView{User: us[i], Perms: permsFor(actor, &us[i])}
+	}
+	c.JSON(200, out)
 }
 
-// updateUser is how pending accounts get approved: admins set role and active.
-// Identity fields come from GitHub and cannot be edited.
-func (s *Server) updateUser(c *gin.Context) {
+// loadTarget fetches the account named in the URL, replying 400/404 itself on failure.
+func (s *Server) loadTarget(c *gin.Context) (*model.User, bool) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		c.JSON(400, gin.H{"error": "bad id"})
+		return nil, false
+	}
+	u, err := s.store.GetUser(c.Request.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		c.JSON(404, gin.H{"error": "user not found"})
+		return nil, false
+	}
+	if err != nil {
+		serverError(c)
+		return nil, false
+	}
+	return u, true
+}
+
+// denyUserChange explains why permsFor said no.
+func denyUserChange(c *gin.Context, actor, target *model.User, what string) {
+	switch {
+	case target.Role == model.RoleSuperAdmin:
+		c.JSON(403, gin.H{"error": "the super-admin account cannot be changed"})
+	case actor.ID == target.ID:
+		c.JSON(400, gin.H{"error": "you cannot change your own account"})
+	case actor.Role == model.RoleAdmin:
+		c.JSON(403, gin.H{"error": "only the super-admin can " + what + " (admins can approve pending accounts and promote users to admin)"})
+	default:
+		c.JSON(403, gin.H{"error": "forbidden"})
+	}
+}
+
+// updateUser changes a role and/or the active flag. Identity fields come from GitHub
+// and cannot be edited. What is allowed depends on who is asking: see permsFor.
+func (s *Server) updateUser(c *gin.Context) {
+	target, ok := s.loadTarget(c)
+	if !ok {
 		return
 	}
 	var in struct {
@@ -133,24 +175,52 @@ func (s *Server) updateUser(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "bad request"})
 		return
 	}
-	if in.Role != nil && !model.ValidRole(*in.Role) {
+	if in.Role != nil && !model.AssignableRole(*in.Role) {
 		c.JSON(400, gin.H{"error": "role must be pending, user or admin"})
 		return
 	}
-	// An admin cannot demote or deactivate themselves (prevents locking everyone out).
-	if current(c).ID == id && (in.Role != nil || in.Active != nil) {
-		c.JSON(400, gin.H{"error": "cannot change your own role or active state"})
+	actor := current(c)
+	perms := permsFor(actor, target)
+	if in.Role != nil && *in.Role != target.Role && !perms.canSetRole(*in.Role) {
+		what := "demote or change the role of an admin"
+		if target.Role != model.RoleAdmin {
+			what = "make that role change"
+		}
+		denyUserChange(c, actor, target, what)
 		return
 	}
-	u, err := s.store.UpdateUser(c.Request.Context(), id, in.Role, in.Active)
+	if in.Active != nil && *in.Active != target.Active && !perms.Active {
+		denyUserChange(c, actor, target, "deactivate or reactivate accounts")
+		return
+	}
+	u, err := s.store.UpdateUser(c.Request.Context(), target.ID, in.Role, in.Active)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		c.JSON(404, gin.H{"error": "user not found"})
 	case err != nil:
 		serverError(c)
 	default:
-		c.JSON(200, u)
+		c.JSON(200, userView{User: *u, Perms: permsFor(actor, u)})
 	}
+}
+
+// deleteUser removes an account; super-admin only.
+func (s *Server) deleteUser(c *gin.Context) {
+	target, ok := s.loadTarget(c)
+	if !ok {
+		return
+	}
+	actor := current(c)
+	if !permsFor(actor, target).Delete {
+		denyUserChange(c, actor, target, "delete accounts")
+		return
+	}
+	if err := s.store.DeleteUser(c.Request.Context(), target.ID); err != nil {
+		serverError(c)
+		return
+	}
+	s.log.Info("user deleted", "by", actor.GitHubLogin, "login", target.GitHubLogin)
+	c.JSON(200, gin.H{"ok": true})
 }
 
 func (s *Server) syncStatus(c *gin.Context) { c.JSON(200, s.svc.SyncStatus()) }

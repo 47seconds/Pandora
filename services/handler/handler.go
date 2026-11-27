@@ -61,16 +61,17 @@ func New(d Deps) *gin.Engine {
 	authed.POST("/auth/logout", s.logout)
 
 	// Approved accounts (user, admin). Pending accounts only get /auth/me.
-	member := authed.Group("/api/v1", s.requireRole(model.RoleUser, model.RoleAdmin))
+	member := authed.Group("/api/v1", s.requireRole(model.RoleUser, model.RoleAdmin, model.RoleSuperAdmin))
 	member.GET("/me/prs", s.myPRs)
 	member.GET("/me/reviews", s.myReviews)
 	member.GET("/prs/:id", s.getPR)
 
-	admin := authed.Group("/api/v1/admin", s.requireRole(model.RoleAdmin))
+	admin := authed.Group("/api/v1/admin", s.requireRole(model.RoleAdmin, model.RoleSuperAdmin))
 	admin.GET("/prs", s.adminPRs)
 	admin.GET("/stats", s.adminStats)
 	admin.GET("/users", s.listUsers)
 	admin.PATCH("/users/:id", s.updateUser)
+	admin.DELETE("/users/:id", s.deleteUser) // super-admin only (checked in the handler)
 	admin.GET("/sync", s.syncStatus)
 	admin.POST("/sync", s.startSync)
 	return r
@@ -162,9 +163,9 @@ func (s *Server) mountDashboard(r *gin.Engine) {
 	})
 }
 
-var assetRef = regexp.MustCompile(`(src|href)="([A-Za-z0-9_.\-]+\.(?:js|css))"`)
+var assetRef = regexp.MustCompile(`(src|href)="([A-Za-z0-9_.\-]+\.(?:js|css|png|webp|ico|svg))"`)
 
-// versionAssets appends ?v=<modtime-size> to local .js/.css references in the page.
+// versionAssets appends ?v=<modtime-size> to local .js/.css/image references in the page.
 func versionAssets(dir string, html []byte) []byte {
 	return assetRef.ReplaceAllFunc(html, func(m []byte) []byte {
 		sub := assetRef.FindSubmatch(m)

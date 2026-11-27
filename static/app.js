@@ -2,6 +2,10 @@
   'use strict';
   const app = document.getElementById('app');
   const state = { user: null, timer: null, rid: 0 };
+  // The server stamps this script's URL with a content version (?v=...); reuse it for images
+  // so a CDN never serves art from an older release.
+  const ver = document.currentScript ? new URL(document.currentScript.src, location.href).search : '';
+  const asset = (name) => name + ver;
 
   // PR titles, descriptions, names and AI text are untrusted: escape everything dynamic.
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -28,6 +32,8 @@
   };
   const hours = (h) => !h ? '–' : h < 48 ? h.toFixed(1) + ' h' : (h / 24).toFixed(1) + ' d';
   const prUpdated = (p) => p.gh_updated_at || p.updated_at;
+  const isAdmin = (r) => r === 'admin' || r === 'superadmin';
+  const roleLabel = (r) => r === 'superadmin' ? 'super-admin' : r;
 
   const theme = {
     get() { try { return localStorage.getItem('pandora_theme') || 'system'; } catch { return 'system'; } },
@@ -56,11 +62,11 @@
 
   // ---------- chrome ----------
   function shell(active, inner) {
-    const u = state.user, pending = u.role === 'pending', admin = u.role === 'admin';
+    const u = state.user, pending = u.role === 'pending', admin = isAdmin(u.role);
     const link = (h, key, label) => `<a href="${h}" class="${active === key ? 'active' : ''}">${label}</a>`;
     app.innerHTML = `
       <header>
-        <a class="brand" href="#/">Pandora</a>
+        <a class="brand" href="#/"><img class="logo" src="${asset('icon-192.png')}" alt="">Pandora</a>
         <nav>
           ${pending ? '' : link('#/my', 'my', 'My pull requests') + link('#/reviews', 'reviews', 'Review pull requests')}
           ${link('#/settings', 'settings', 'Settings')}
@@ -90,12 +96,13 @@
     const code = new URLSearchParams(location.search).get('error');
     if (code) history.replaceState(null, '', location.pathname + location.hash);
     app.innerHTML = `
-      <div class="login card pad">
-        <h1>Pandora</h1>
-        <p class="muted">Pull request review and deployment.</p>
-        <div class="error">${esc(code ? LOGIN_ERRORS[code] || 'Sign-in failed.' : '')}</div>
-        <a class="gh" href="/auth/github/login">Continue with GitHub</a>
-        <p class="muted">New accounts need an admin's approval before they can see anything.</p>
+      <div class="login card">
+        <img class="banner" src="${asset('banner.webp')}" width="1200" height="427" alt="Pandora: automate PR, test and deploy">
+        <div class="pad">
+          <div class="error">${esc(code ? LOGIN_ERRORS[code] || 'Sign-in failed.' : '')}</div>
+          <a class="gh" href="/auth/github/login">Continue with GitHub</a>
+          <p class="muted">New accounts need an admin's approval before they can see anything.</p>
+        </div>
       </div>`;
   }
 
@@ -195,7 +202,7 @@
           <dt>GitHub username</dt><dd>${esc(u.github_login)}</dd>
           <dt>Name</dt><dd>${esc(u.name) || '<span class="muted">not set on GitHub</span>'}</dd>
           <dt>Email</dt><dd>${esc(u.email) || '<span class="muted">not shared by GitHub</span>'}</dd>
-          <dt>Role</dt><dd>${esc(u.role)}</dd>
+          <dt>Role</dt><dd>${esc(roleLabel(u.role))}</dd>
           <dt>Member since</dt><dd>${esc(when(u.created_at))}</dd>
           <dt>Last sign-in</dt><dd>${esc(when(u.last_login_at))}</dd>
         </dl>
@@ -223,7 +230,7 @@
 
   async function renderAdmin(rid, sub) {
     stopRefresh();
-    if (state.user.role !== 'admin') { location.hash = '#/my'; return; }
+    if (!isAdmin(state.user.role)) { location.hash = '#/my'; return; }
     if (sub === 'prs') return adminPRs(rid);
     if (sub === 'users') return adminUsers(rid);
     return adminOverview(rid);
@@ -384,31 +391,57 @@
     startRefresh(load);
   }
 
+  // Every button below comes from `perms`, which the server computes for the signed-in admin and
+  // enforces again on each request: admins can approve and promote; only the super-admin can
+  // demote, deactivate or delete; nobody can change the super-admin.
   async function adminUsers(rid) {
     adminShell('users', '<div class="error" id="err"></div><div id="listbox" class="muted">Loading…</div>');
     let users;
     try { users = await api('/api/v1/admin/users'); } catch (e) { return showError(e); }
     if (rid !== state.rid) return;
     const pending = users.filter((u) => u.role === 'pending' && u.active).length;
+    const isSuper = state.user.role === 'superadmin';
+    const row = (u) => {
+      const p = u.perms || { roles: [], active: false, delete: false };
+      const opts = [u.role, ...p.roles];
+      const canEdit = p.roles.length > 0 || p.active;
+      const actions = [];
+      if (u.role === 'pending' && p.roles.includes('user')) actions.push('<button class="primary approve">Approve</button>');
+      if (u.role === 'user' && p.roles.includes('admin')) actions.push('<button class="promote">Make admin</button>');
+      if (canEdit) actions.push('<button class="save">Save</button>');
+      if (p.delete) actions.push('<button class="del">Delete</button>');
+      const none = u.id === state.user.id ? 'you' : u.role === 'superadmin' ? 'owner' : '–';
+      return `<tr data-id="${u.id}" data-login="${esc(u.github_login)}">
+        <td>${u.avatar_url ? `<img class="avatar" src="${esc(u.avatar_url)}" alt=""> ` : ''}<strong>${esc(u.github_login || '(not signed in yet)')}</strong>
+          ${u.role === 'superadmin' ? '<span class="badge b-purple">Super-admin</span>' : ''}${u.active ? '' : ' <span class="badge b-red">Deactivated</span>'}
+          <br><span class="muted">${esc(u.name)}${u.email ? ' · ' + esc(u.email) : ''}</span></td>
+        <td><select name="role" aria-label="Role" ${p.roles.length ? '' : 'disabled'}>${opts.map((r) => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${esc(roleLabel(r))}</option>`).join('')}</select></td>
+        <td><input type="checkbox" name="active" aria-label="Active" ${u.active ? 'checked' : ''} ${p.active ? '' : 'disabled'}></td>
+        <td class="muted hide-sm">${esc(ago(u.last_login_at)) || '–'}</td>
+        <td>${actions.length ? actions.join(' ') : `<span class="muted">${none}</span>`}</td></tr>`;
+    };
     $('listbox').className = '';
     $('listbox').innerHTML = `${pending ? `<div class="banner"><strong>${pending} account${pending === 1 ? '' : 's'} awaiting approval.</strong></div>` : ''}
+      <p class="muted">${isSuper ? 'You are the super-admin: you can change any role, deactivate accounts and delete them.'
+        : 'Admins can approve pending accounts and promote users to admin. Demoting, deactivating or deleting accounts is for the super-admin.'}</p>
       <div class="card"><table><thead><tr><th>Account</th><th>Role</th><th>Active</th><th class="hide-sm">Last sign-in</th><th></th></tr></thead><tbody>
-      ${users.map((u) => { const me = u.id === state.user.id; return `<tr data-id="${u.id}">
-        <td>${u.avatar_url ? `<img class="avatar" src="${esc(u.avatar_url)}" alt=""> ` : ''}<strong>${esc(u.github_login || '(not signed in yet)')}</strong>
-          <br><span class="muted">${esc(u.name)}${u.email ? ' · ' + esc(u.email) : ''}</span></td>
-        <td><select name="role" ${me ? 'disabled' : ''} aria-label="Role">${['pending', 'user', 'admin'].map((r) => `<option ${u.role === r ? 'selected' : ''}>${r}</option>`).join('')}</select></td>
-        <td><input type="checkbox" name="active" aria-label="Active" ${u.active ? 'checked' : ''} ${me ? 'disabled' : ''}></td>
-        <td class="muted hide-sm">${esc(ago(u.last_login_at)) || '–'}</td>
-        <td>${me ? '<span class="muted">you</span>' : `${u.role === 'pending' ? '<button class="primary approve">Approve</button> ' : ''}<button class="save">Save</button>`}</td></tr>`; }).join('')}
+      ${users.map(row).join('')}
       </tbody></table></div>`;
     $('listbox').querySelector('tbody').onclick = async (e) => {
       const btn = e.target.closest('button'); if (!btn) return;
       const tr = btn.closest('tr'), q = (n) => tr.querySelector('[name=' + n + ']');
-      if (btn.classList.contains('approve')) q('role').value = 'user';
+      const url = '/api/v1/admin/users/' + tr.dataset.id;
       try {
-        await api('/api/v1/admin/users/' + tr.dataset.id, { method: 'PATCH', body: JSON.stringify({ role: q('role').value, active: q('active').checked }) });
+        if (btn.classList.contains('del')) {
+          if (!confirm('Delete the account for ' + tr.dataset.login + '?\n\nThey lose access immediately. Their pull requests stay. If they sign in with GitHub again they start over as pending (deactivate instead to keep them out).')) return;
+          await api(url, { method: 'DELETE' });
+          return adminUsers(rid);
+        }
+        if (btn.classList.contains('approve')) q('role').value = 'user';
+        if (btn.classList.contains('promote')) q('role').value = 'admin';
+        await api(url, { method: 'PATCH', body: JSON.stringify({ role: q('role').value, active: q('active').checked }) });
         $('err').textContent = '';
-        if (btn.classList.contains('approve')) return adminUsers(rid); // re-sort: it is no longer pending
+        if (!btn.classList.contains('save')) return adminUsers(rid); // re-sort and refresh the buttons
         btn.textContent = 'Saved'; setTimeout(() => (btn.textContent = 'Save'), 1200);
       } catch (err) { $('err').textContent = err.message; }
     };

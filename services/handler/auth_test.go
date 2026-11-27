@@ -1,6 +1,7 @@
 package handler_test
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -9,6 +10,8 @@ import (
 	"time"
 
 	"vocallabs.com/pandora/services/auth"
+	"vocallabs.com/pandora/services/config"
+	"vocallabs.com/pandora/services/store"
 )
 
 func TestOAuthLoginFlow(t *testing.T) {
@@ -94,54 +97,168 @@ func mustState(r *http.Response) string {
 	return loc.Query().Get("state")
 }
 
-func TestBootstrapAdminAndPromotion(t *testing.T) {
+func userID(t *testing.T, a *testApp, c *http.Client) int {
+	t.Helper()
+	_, body := call(t, c, "GET", a.url+"/auth/me", nil)
+	return int(asMap(body)["id"].(float64))
+}
+
+func patch(t *testing.T, a *testApp, c *http.Client, id int, body map[string]any) int {
+	t.Helper()
+	code, _ := call(t, c, "PATCH", a.url+"/api/v1/admin/users/"+itoa(id), body)
+	return code
+}
+
+func roleOf(t *testing.T, a *testApp, id int) string {
+	t.Helper()
+	u, err := a.st.GetUser(context.Background(), int64(id))
+	if err != nil {
+		return "(deleted)"
+	}
+	return u.Role
+}
+
+func TestSuperAdminAndPromotion(t *testing.T) {
 	a := newApp(t, nil, false) // BootstrapAdmin = "boss" (GitHub login is "Boss": case-insensitive)
 	boss := signIn(t, a, "boss")
 	_, body := call(t, boss, "GET", a.url+"/auth/me", nil)
-	if asMap(body)["role"] != "admin" {
-		t.Fatalf("bootstrap admin: %v", asMap(body))
+	if asMap(body)["role"] != "superadmin" {
+		t.Fatalf("bootstrap login must be super-admin: %v", asMap(body))
 	}
+	bossID := userID(t, a, boss)
 
-	bob := signIn(t, a, "bob")
-	_, body = call(t, bob, "GET", a.url+"/auth/me", nil)
-	bobID := int(asMap(body)["id"].(float64))
-	if asMap(body)["role"] != "pending" {
-		t.Fatalf("others start pending: %v", asMap(body))
+	alice, bob, carol := signIn(t, a, "alice"), signIn(t, a, "bob"), signIn(t, a, "carol")
+	aliceID, bobID, carolID := userID(t, a, alice), userID(t, a, bob), userID(t, a, carol)
+	if roleOf(t, a, bobID) != "pending" {
+		t.Fatal("others start pending")
 	}
 	if code, _ := call(t, bob, "GET", a.url+"/api/v1/admin/users", nil); code != 403 {
 		t.Fatalf("pending must not list users: %d", code)
 	}
 
-	// pending users appear first for the admin, who approves them
-	_, body = call(t, boss, "GET", a.url+"/api/v1/admin/users", nil)
-	us := asList(body)
-	if len(us) != 2 || us[0]["role"] != "pending" {
-		t.Fatalf("users: %v", us)
+	// the superadmin approves bob, then makes him admin; a plain user still has no admin access
+	if patch(t, a, boss, bobID, map[string]any{"role": "user"}) != 200 || roleOf(t, a, bobID) != "user" {
+		t.Fatal("approve")
 	}
-	if code, _ := call(t, boss, "PATCH", a.url+"/api/v1/admin/users/"+itoa(bobID), map[string]any{"role": "user"}); code != 200 {
-		t.Fatalf("approve: %d", code)
+	if code := patch(t, a, bob, bobID, map[string]any{"role": "admin"}); code != 403 {
+		t.Fatalf("a user must not promote themselves: %d", code)
 	}
-	if code, _ := call(t, bob, "GET", a.url+"/api/v1/me/prs", nil); code != 200 {
-		t.Fatalf("approved user: %d", code)
+	if patch(t, a, boss, bobID, map[string]any{"role": "admin"}) != 200 {
+		t.Fatal("promote bob")
 	}
-	// but a user still cannot reach admin features or promote themselves
-	if code, _ := call(t, bob, "PATCH", a.url+"/api/v1/admin/users/"+itoa(bobID), map[string]any{"role": "admin"}); code != 403 {
-		t.Fatalf("privilege escalation: %d", code)
+
+	// bob is a plain admin now. He CAN: approve pending -> user, promote user -> admin.
+	if patch(t, a, bob, aliceID, map[string]any{"role": "user"}) != 200 || roleOf(t, a, aliceID) != "user" {
+		t.Fatal("admin approves pending -> user")
 	}
-	if code, _ := call(t, bob, "GET", a.url+"/api/v1/admin/stats", nil); code != 403 {
-		t.Fatalf("stats for user: %d", code)
+	if patch(t, a, bob, aliceID, map[string]any{"role": "admin"}) != 200 || roleOf(t, a, aliceID) != "admin" {
+		t.Fatal("admin promotes user -> admin")
 	}
-	// promote to admin, and validation
-	call(t, boss, "PATCH", a.url+"/api/v1/admin/users/"+itoa(bobID), map[string]any{"role": "admin"})
-	if code, _ := call(t, bob, "GET", a.url+"/api/v1/admin/stats", nil); code != 200 {
-		t.Fatalf("promoted admin: %d", code)
+	// He CANNOT: demote admins, push anyone back to pending, skip steps, touch active/delete, or touch the superadmin.
+	for name, tc := range map[string]struct {
+		target int
+		body   map[string]any
+	}{
+		"demote admin to user":       {aliceID, map[string]any{"role": "user"}},
+		"demote admin to pending":    {aliceID, map[string]any{"role": "pending"}},
+		"deactivate admin":           {aliceID, map[string]any{"active": false}},
+		"pending straight to admin":  {carolID, map[string]any{"role": "admin"}},
+		"deactivate pending account": {carolID, map[string]any{"active": false}},
+		"demote the superadmin":      {bossID, map[string]any{"role": "user"}},
+		"deactivate the superadmin":  {bossID, map[string]any{"active": false}},
+		"edit himself":               {bobID, map[string]any{"role": "user"}},
+	} {
+		if code := patch(t, a, bob, tc.target, tc.body); code != 403 && code != 400 {
+			t.Fatalf("admin must be refused (%s): %d", name, code)
+		}
 	}
-	if code, _ := call(t, boss, "PATCH", a.url+"/api/v1/admin/users/"+itoa(bobID), map[string]any{"role": "superuser"}); code != 400 {
-		t.Fatalf("invalid role: %d", code)
+	if roleOf(t, a, aliceID) != "admin" || roleOf(t, a, carolID) != "pending" || roleOf(t, a, bossID) != "superadmin" {
+		t.Fatal("refused changes must not have been applied")
 	}
-	bossID := int(asMap(mustBody(call(t, boss, "GET", a.url+"/auth/me", nil)))["id"].(float64))
-	if code, _ := call(t, boss, "PATCH", a.url+"/api/v1/admin/users/"+itoa(bossID), map[string]any{"role": "user"}); code != 400 {
-		t.Fatalf("self-demote: %d", code)
+	// moving user -> pending is a demotion too
+	patch(t, a, bob, carolID, map[string]any{"role": "user"})
+	if code := patch(t, a, bob, carolID, map[string]any{"role": "pending"}); code != 403 {
+		t.Fatalf("admin cannot send a user back to pending: %d", code)
+	}
+	if code, _ := call(t, bob, "DELETE", a.url+"/api/v1/admin/users/"+itoa(carolID), nil); code != 403 || roleOf(t, a, carolID) == "(deleted)" {
+		t.Fatalf("admin must not delete accounts: %d", code)
+	}
+	if code, _ := call(t, bob, "DELETE", a.url+"/api/v1/admin/users/"+itoa(bossID), nil); code != 403 {
+		t.Fatalf("nobody deletes the superadmin: %d", code)
+	}
+
+	// The permissions the dashboard receives match what the API enforces.
+	_, lb := call(t, bob, "GET", a.url+"/api/v1/admin/users", nil)
+	for _, u := range asList(lb) {
+		p := u["perms"].(map[string]any)
+		switch u["github_login"] {
+		case "alice": // another admin: nothing
+			if len(p["roles"].([]any)) != 0 || p["active"] != false || p["delete"] != false {
+				t.Fatalf("perms for an admin target: %v", p)
+			}
+		case "carol": // user: may be promoted
+			if r := p["roles"].([]any); len(r) != 1 || r[0] != "admin" || p["delete"] != false {
+				t.Fatalf("perms for a user target: %v", p)
+			}
+		case "Boss":
+			if len(p["roles"].([]any)) != 0 || p["delete"] != false {
+				t.Fatalf("perms for the superadmin: %v", p)
+			}
+		}
+	}
+
+	// The superadmin CAN do all of it.
+	if patch(t, a, boss, aliceID, map[string]any{"role": "user"}) != 200 || roleOf(t, a, aliceID) != "user" {
+		t.Fatal("superadmin demotes admin -> user")
+	}
+	patch(t, a, boss, aliceID, map[string]any{"role": "admin"})
+	if patch(t, a, boss, aliceID, map[string]any{"role": "pending"}) != 200 || roleOf(t, a, aliceID) != "pending" {
+		t.Fatal("superadmin sends an admin back to pending")
+	}
+	if patch(t, a, boss, aliceID, map[string]any{"active": false}) != 200 {
+		t.Fatal("superadmin deactivates")
+	}
+	if code := patch(t, a, boss, aliceID, map[string]any{"role": "superadmin"}); code != 400 {
+		t.Fatalf("superadmin cannot be assigned: %d", code)
+	}
+	if code := patch(t, a, boss, bossID, map[string]any{"role": "user"}); code != 400 && code != 403 {
+		t.Fatalf("superadmin cannot demote self: %d", code)
+	}
+	if code, _ := call(t, boss, "DELETE", a.url+"/api/v1/admin/users/"+itoa(bossID), nil); code != 400 && code != 403 {
+		t.Fatalf("superadmin cannot delete self: %d", code)
+	}
+
+	// Delete: the account row goes, its session stops working, and PR data is untouched.
+	postEvent(t, a, "pull_request", pr{action: "review_requested", number: 30, sha: "s", body: "b", author: "bob", draft: true}.event(), true)
+	if code, _ := call(t, boss, "DELETE", a.url+"/api/v1/admin/users/"+itoa(bobID), nil); code != 200 {
+		t.Fatalf("superadmin deletes: %d", code)
+	}
+	if roleOf(t, a, bobID) != "(deleted)" {
+		t.Fatal("row should be gone")
+	}
+	if code, _ := call(t, bob, "GET", a.url+"/auth/me", nil); code != 401 {
+		t.Fatalf("deleted user's session must die: %d", code)
+	}
+	if prs, _ := a.st.ListPRs(context.Background(), store.PRFilter{Author: "bob"}); len(prs) != 1 {
+		t.Fatal("deleting a login must not delete PR history")
+	}
+	if code, _ := call(t, boss, "DELETE", a.url+"/api/v1/admin/users/99999", nil); code != 404 {
+		t.Fatalf("unknown user: %d", code)
+	}
+	// signing in again simply starts a fresh pending account
+	bob2 := signIn(t, a, "bob")
+	if _, b := call(t, bob2, "GET", a.url+"/auth/me", nil); asMap(b)["role"] != "pending" {
+		t.Fatalf("re-signup: %v", asMap(b))
+	}
+}
+
+func TestFirstSignInIsSuperAdminWhenUnconfigured(t *testing.T) {
+	a := newApp(t, func(c *config.Config) { c.BootstrapAdmin = "" }, false)
+	first, second := signIn(t, a, "alice"), signIn(t, a, "bob")
+	_, b1 := call(t, first, "GET", a.url+"/auth/me", nil)
+	_, b2 := call(t, second, "GET", a.url+"/auth/me", nil)
+	if asMap(b1)["role"] != "superadmin" || asMap(b2)["role"] != "pending" {
+		t.Fatalf("first=%v second=%v", asMap(b1)["role"], asMap(b2)["role"])
 	}
 }
 

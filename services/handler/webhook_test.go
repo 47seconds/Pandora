@@ -117,9 +117,10 @@ func TestAllowedReposAndSignature(t *testing.T) {
 
 func TestDashboardServed(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "index.html"), []byte(`<html><link rel="stylesheet" href="style.css"><script src="theme.js"></script><script src="app.js"></script><img src="https://x/y.js"></html>`), 0o644)
+	os.WriteFile(filepath.Join(dir, "index.html"), []byte(`<html><link rel="icon" href="favicon-32.png"><link rel="stylesheet" href="style.css"><script src="theme.js"></script><script src="app.js"></script><img src="https://x/y.js"></html>`), 0o644)
 	os.WriteFile(filepath.Join(dir, "app.js"), []byte("console.log(1)"), 0o644)
 	os.WriteFile(filepath.Join(dir, "style.css"), []byte("a{}"), 0o644)
+	os.WriteFile(filepath.Join(dir, "favicon-32.png"), []byte("png"), 0o644)
 	os.MkdirAll(filepath.Join(dir, "sub"), 0o755)
 	a := newApp(t, func(c *config.Config) { c.StaticDir = dir }, false)
 	c := browser()
@@ -139,7 +140,7 @@ func TestDashboardServed(t *testing.T) {
 	}
 	body, _ := io.ReadAll(r.Body)
 	html := string(body)
-	for _, want := range []string{`href="style.css?v=`, `src="app.js?v=`} {
+	for _, want := range []string{`href="style.css?v=`, `src="app.js?v=`, `href="favicon-32.png?v=`} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("asset not versioned (%s): %s", want, html)
 		}
