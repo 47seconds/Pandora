@@ -49,12 +49,18 @@ func sanitize(s string) string {
 	return s
 }
 
-func (a *Anthropic) Review(ctx context.Context, in Input) (*Result, error) {
+// userMessage frames the PR for the model; shared by all providers.
+func userMessage(in Input) string {
 	user := fmt.Sprintf("Repository: %s\nPR #%d by %s, base branch %s\n\n<pr_title>\n%s\n</pr_title>\n\n<pr_description>\n%s\n</pr_description>\n\n<diff>\n%s\n</diff>",
 		in.Repo, in.Number, in.Author, in.Base, sanitize(in.Title), sanitize(in.Body), sanitize(in.Diff))
 	if in.Truncated {
 		user += "\n\n(The diff was truncated for size.)"
 	}
+	return user
+}
+
+func (a *Anthropic) Review(ctx context.Context, in Input) (*Result, error) {
+	user := userMessage(in)
 	payload, _ := json.Marshal(map[string]any{
 		"model":      a.model,
 		"max_tokens": 2048,

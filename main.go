@@ -34,23 +34,40 @@ func main() {
 	defer st.Close()
 
 	var rv review.Reviewer = review.Mock{}
-	if cfg.Provider == "anthropic" {
+	switch cfg.Provider {
+	case "anthropic":
 		rv = review.NewAnthropic(cfg.AnthropicKey, cfg.Model)
-	} else {
+	case "openrouter":
+		rv = review.NewOpenRouter(cfg.OpenRouterKey, cfg.Model)
+	default:
 		log.Warn("using MOCK reviewer; every PR will pass")
 	}
+
+	var src github.TokenSource = github.StaticToken(cfg.GitHubToken)
+	if cfg.GitHubAppID != "" {
+		app, err := github.NewAppAuth(cfg.GitHubAppID, cfg.GitHubAppKey, "")
+		if err != nil {
+			log.Error("github app", "err", err)
+			os.Exit(1)
+		}
+		src = app
+		log.Info("github auth: app", "app_id", cfg.GitHubAppID)
+	} else {
+		log.Warn("github auth: personal access token (dev fallback); use a GitHub App in production")
+	}
+	ghc := github.NewClient(src)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	svc := service.New(ctx, cfg, st, github.NewClient(cfg.GitHubToken), rv, log)
+	svc := service.New(ctx, cfg, st, ghc, rv, log)
 	if err := svc.Recover(ctx); err != nil {
 		log.Error("recover", "err", err)
 	}
 
 	srv := &http.Server{Addr: cfg.Addr, Handler: handler.New(cfg, st, svc, auth.NewManager(cfg.JWTSecret, cfg.JWTTTL), log), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
-		log.Info("pandora listening", "addr", cfg.Addr, "provider", cfg.Provider)
+		log.Info("pandora listening", "addr", cfg.Addr, "provider", cfg.Provider, "model", cfg.Model)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("server", "err", err)
 			stop()

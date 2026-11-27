@@ -36,6 +36,7 @@ func New(cfg *config.Config, st *store.Store, o *service.Service, am *auth.Manag
 
 	r.GET("/healthz", func(c *gin.Context) { c.JSON(200, gin.H{"ok": true}) })
 	r.POST("/webhook/github", s.webhook)
+	r.POST("/github/webhook", s.webhook) // alias: the URL configured on the GitHub App
 
 	s.mountDashboard(r)
 

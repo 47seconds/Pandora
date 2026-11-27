@@ -36,7 +36,7 @@ func authServer(t *testing.T, cfg *config.Config) string {
 		cfg.SignupDomains = map[string]bool{}
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	svc := service.New(context.Background(), cfg, st, github.NewClient("x"), review.Mock{}, log)
+	svc := service.New(context.Background(), cfg, st, github.NewClient(github.StaticToken("x")), review.Mock{}, log)
 	srv := httptest.NewServer(handler.New(cfg, st, svc, auth.NewManager(jwtSecret, time.Hour), log))
 	t.Cleanup(srv.Close)
 	return srv.URL

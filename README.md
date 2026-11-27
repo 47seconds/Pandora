@@ -55,6 +55,30 @@ public but all data needs the JWT. To use a real frontend later, put its build o
 (must contain `index.html`, relative asset paths) or point `PANDORA_STATIC_DIR` elsewhere.
 Strict CSP is set (no inline scripts/styles), so a build must not rely on them.
 
+## AI provider
+`PANDORA_REVIEW_PROVIDER`: `anthropic` (needs `ANTHROPIC_API_KEY`, `sk-ant-...`), `openrouter`
+(needs `OPENROUTER_API_KEY`, `sk-or-...`; model ids look like `anthropic/claude-sonnet-5.5`), or `mock`
+(approves everything; wiring tests only). An OpenRouter key placed under `ANTHROPIC_API_KEY` is rejected at startup with a hint.
+
+## GitHub App (how Pandora talks to GitHub)
+Pandora authenticates as a GitHub App, not with a personal token. For every repo it looks up the app's
+installation and mints a short-lived (1h) token limited to that single repo, cached and refreshed automatically.
+Nothing long-lived is used for API calls, and access is exactly the repos where the app is installed.
+
+Create it once (GitHub org -> Settings -> Developer settings -> GitHub Apps -> New):
+- **Webhook:** uncheck "Active" (events arrive via the workflow below). Or enable it with URL
+  `https://<pandora>/webhook/github` + the same secret as `PANDORA_WEBHOOK_SECRET` and subscribe to
+  "Pull request", and then the workflow is optional.
+- **Repository permissions:** Pull requests: Read & write; Commit statuses: Read & write; Metadata: Read.
+  (Later phases will need more, e.g. Contents: Read to run tests, Checks. Changing permissions makes
+  GitHub ask the org to re-approve.)
+- Generate a **private key** (.pem) and note the **App ID**. Install the app on the repos to review.
+- Set `PANDORA_GITHUB_APP_ID` and `PANDORA_GITHUB_APP_PRIVATE_KEY` (or `_FILE`). The key as a single line:
+  `awk 'NF {printf "%s\\n", $0}' key.pem`
+
+If the app isn't installed on a repo, events for it fail with "github app is not installed on this repo".
+`PANDORA_GITHUB_TOKEN` still works as a dev fallback when no App is set (a warning is logged).
+
 ## Database and schema
 SQLite file (`PANDORA_DB_PATH`, `/data/pandora.db` in Docker, on the `pandora_data` volume). Back it up by copying
 the file (use `sqlite3 pandora.db ".backup out.db"` while running).

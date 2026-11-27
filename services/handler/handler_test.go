@@ -105,7 +105,7 @@ func TestPipeline(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	svc := service.New(ctx, cfg, st, github.NewClientWithBase("tok", ghSrv.URL), review.Mock{}, log)
+	svc := service.New(ctx, cfg, st, github.NewClientWithBase(github.StaticToken("tok"), ghSrv.URL), review.Mock{}, log)
 	srv := httptest.NewServer(handler.New(cfg, st, svc, auth.NewManager(cfg.JWTSecret, cfg.JWTTTL), log))
 	defer srv.Close()
 

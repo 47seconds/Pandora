@@ -68,17 +68,33 @@ type PR struct {
 	} `json:"base"`
 }
 
+// TokenSource supplies the credential used for API calls about a repo ("owner/name").
+type TokenSource interface {
+	Token(ctx context.Context, repo string) (string, error)
+}
+
+// StaticToken is a fixed credential (personal access token); dev fallback only.
+type StaticToken string
+
+func (t StaticToken) Token(context.Context, string) (string, error) { return string(t), nil }
+
 type Client struct {
-	token string
-	base  string
-	http  *http.Client
+	src  TokenSource
+	base string
+	http *http.Client
 }
 
-func NewClient(token string) *Client {
-	return &Client{token: token, base: "https://api.github.com", http: &http.Client{Timeout: 30 * time.Second}}
+func NewClient(src TokenSource) *Client {
+	return &Client{src: src, base: DefaultBase, http: &http.Client{Timeout: 30 * time.Second}}
 }
 
-func (c *Client) do(ctx context.Context, method, path, accept string, body any) (*http.Response, error) {
+const DefaultBase = "https://api.github.com"
+
+func (c *Client) do(ctx context.Context, repo, method, path, accept string, body any) (*http.Response, error) {
+	token, err := c.src.Token(ctx, repo)
+	if err != nil {
+		return nil, err
+	}
 	var rd io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -91,7 +107,7 @@ func (c *Client) do(ctx context.Context, method, path, accept string, body any) 
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", accept)
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	if body != nil {
@@ -112,7 +128,7 @@ func (c *Client) do(ctx context.Context, method, path, accept string, body any) 
 const jsonAccept = "application/vnd.github+json"
 
 func (c *Client) GetPR(ctx context.Context, repo string, n int) (*PR, error) {
-	resp, err := c.do(ctx, "GET", fmt.Sprintf("/repos/%s/pulls/%d", repo, n), jsonAccept, nil)
+	resp, err := c.do(ctx, repo, "GET", fmt.Sprintf("/repos/%s/pulls/%d", repo, n), jsonAccept, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +139,7 @@ func (c *Client) GetPR(ctx context.Context, repo string, n int) (*PR, error) {
 
 // GetDiff returns the PR's unified diff, cut at maxBytes (truncated=true if cut).
 func (c *Client) GetDiff(ctx context.Context, repo string, n, maxBytes int) (diff string, truncated bool, err error) {
-	resp, err := c.do(ctx, "GET", fmt.Sprintf("/repos/%s/pulls/%d", repo, n), "application/vnd.github.v3.diff", nil)
+	resp, err := c.do(ctx, repo, "GET", fmt.Sprintf("/repos/%s/pulls/%d", repo, n), "application/vnd.github.v3.diff", nil)
 	if err != nil {
 		return "", false, err
 	}
@@ -143,7 +159,7 @@ func (c *Client) SetStatus(ctx context.Context, repo, sha, state, contextName, d
 	if len(desc) > 140 {
 		desc = desc[:137] + "..."
 	}
-	resp, err := c.do(ctx, "POST", fmt.Sprintf("/repos/%s/statuses/%s", repo, sha), jsonAccept,
+	resp, err := c.do(ctx, repo, "POST", fmt.Sprintf("/repos/%s/statuses/%s", repo, sha), jsonAccept,
 		map[string]string{"state": state, "context": contextName, "description": desc})
 	if err != nil {
 		return err
@@ -154,7 +170,7 @@ func (c *Client) SetStatus(ctx context.Context, repo, sha, state, contextName, d
 
 // UpsertComment edits the PR comment containing marker, or creates it.
 func (c *Client) UpsertComment(ctx context.Context, repo string, n int, marker, body string) error {
-	resp, err := c.do(ctx, "GET", fmt.Sprintf("/repos/%s/issues/%d/comments?per_page=100", repo, n), jsonAccept, nil)
+	resp, err := c.do(ctx, repo, "GET", fmt.Sprintf("/repos/%s/issues/%d/comments?per_page=100", repo, n), jsonAccept, nil)
 	if err != nil {
 		return err
 	}
@@ -169,7 +185,7 @@ func (c *Client) UpsertComment(ctx context.Context, repo string, n int, marker, 
 	}
 	for _, cm := range comments {
 		if strings.Contains(cm.Body, marker) {
-			r, err := c.do(ctx, "PATCH", fmt.Sprintf("/repos/%s/issues/comments/%d", repo, cm.ID), jsonAccept, map[string]string{"body": body})
+			r, err := c.do(ctx, repo, "PATCH", fmt.Sprintf("/repos/%s/issues/comments/%d", repo, cm.ID), jsonAccept, map[string]string{"body": body})
 			if err != nil {
 				return err
 			}
@@ -177,7 +193,7 @@ func (c *Client) UpsertComment(ctx context.Context, repo string, n int, marker, 
 			return nil
 		}
 	}
-	r, err := c.do(ctx, "POST", fmt.Sprintf("/repos/%s/issues/%d/comments", repo, n), jsonAccept, map[string]string{"body": body})
+	r, err := c.do(ctx, repo, "POST", fmt.Sprintf("/repos/%s/issues/%d/comments", repo, n), jsonAccept, map[string]string{"body": body})
 	if err != nil {
 		return err
 	}
@@ -186,8 +202,8 @@ func (c *Client) UpsertComment(ctx context.Context, repo string, n int, marker, 
 }
 
 // NewClientWithBase points the client at another API host (tests, GitHub Enterprise).
-func NewClientWithBase(token, base string) *Client {
-	c := NewClient(token)
+func NewClientWithBase(src TokenSource, base string) *Client {
+	c := NewClient(src)
 	c.base = base
 	return c
 }
